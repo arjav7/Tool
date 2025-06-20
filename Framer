@@ -59,12 +59,36 @@ export default function InteractiveCanvas(props) {
   const [creationStart, setCreationStart] = useState<{ x: number; y: number } | null>(null)
   const [creatingCircleId, setCreatingCircleId] = useState<string | null>(null)
 
+  // Pinch gesture state
+  const [isPinching, setIsPinching] = useState(false)
+  const [pinchStartDistance, setPinchStartDistance] = useState(0)
+  const [pinchStartRadius, setPinchStartRadius] = useState(0)
+  const [pinchCircleIndex, setPinchCircleIndex] = useState(-1)
+
   // Generate unique ID for circles
   const generateId = () => Math.random().toString(36).substr(2, 9)
 
   // Calculate distance between two points
   const distance = (x1: number, y1: number, x2: number, y2: number) => {
     return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+  }
+
+  // Calculate distance between two touch points
+  const getTouchDistance = (touch1: Touch, touch2: Touch) => {
+    const dx = touch2.clientX - touch1.clientX
+    const dy = touch2.clientY - touch1.clientY
+    return Math.sqrt(dx * dx + dy * dy)
+  }
+
+  // Get center point between two touches
+  const getTouchCenter = (touch1: Touch, touch2: Touch) => {
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return { x: 0, y: 0 }
+
+    return {
+      x: (touch1.clientX + touch2.clientX) / 2 - rect.left,
+      y: (touch1.clientY + touch2.clientY) / 2 - rect.top,
+    }
   }
 
   // Find circle at position
@@ -685,6 +709,10 @@ export default function InteractiveCanvas(props) {
           y: y - circle.y,
         })
       } else {
+        // Clear any moveable circle when clicking outside
+        setMoveableCircleIndex(-1)
+        setSelectedCircleIndex(-1)
+
         // Start creating new circle
         const newCircleId = generateId()
         const newCircle: Circle = {
@@ -770,6 +798,162 @@ export default function InteractiveCanvas(props) {
     }
   }, [isCreatingCircle, creatingCircleId])
 
+  // Handle touch start
+  const handleTouchStart = useCallback(
+    (e: TouchEvent) => {
+      e.preventDefault()
+      handleMouseInteraction()
+
+      if (e.touches.length === 2) {
+        // Two finger pinch
+        const touch1 = e.touches[0]
+        const touch2 = e.touches[1]
+        const center = getTouchCenter(touch1, touch2)
+        const result = findCircleAt(center.x, center.y)
+
+        if (result) {
+          const { circle, index } = result
+          setIsPinching(true)
+          setPinchStartDistance(getTouchDistance(touch1, touch2))
+          setPinchStartRadius(circle.radius)
+          setPinchCircleIndex(index)
+
+          // Make the pinched circle moveable
+          setMoveableCircleIndex(index)
+          setSelectedCircleIndex(-1)
+          setPhysicsActive(false)
+        }
+      } else if (e.touches.length === 1) {
+        // Single finger - treat like mouse
+        const { x, y } = getCanvasCoordinates(e)
+        const result = findCircleAt(x, y)
+
+        if (result) {
+          const { circle, index } = result
+          setMoveableCircleIndex(index)
+          setSelectedCircleIndex(-1)
+          setPhysicsActive(false)
+
+          setDragOffset({
+            x: x - circle.x,
+            y: y - circle.y,
+          })
+        } else {
+          setMoveableCircleIndex(-1)
+          setSelectedCircleIndex(-1)
+
+          const newCircleId = generateId()
+          const newCircle: Circle = {
+            id: newCircleId,
+            x,
+            y,
+            radius: 5,
+            color: circleColor,
+            state: "default",
+            vx: 0,
+            vy: 0,
+            mass: 1,
+          }
+          setCircles((prev) => [...prev, newCircle])
+          setIsCreatingCircle(true)
+          setCreationStart({ x, y })
+          setCreatingCircleId(newCircleId)
+        }
+      }
+    },
+    [findCircleAt, handleMouseInteraction, circleColor],
+  )
+
+  // Handle touch move
+  const handleTouchMove = useCallback(
+    (e: TouchEvent) => {
+      e.preventDefault()
+
+      if (isPinching && e.touches.length === 2 && pinchCircleIndex >= 0) {
+        // Handle pinch resize
+        const touch1 = e.touches[0]
+        const touch2 = e.touches[1]
+        const currentDistance = getTouchDistance(touch1, touch2)
+        const scale = currentDistance / pinchStartDistance
+        const newRadius = Math.max(minRadius, Math.min(maxRadius, pinchStartRadius * scale))
+
+        setCircles((prev) =>
+          prev.map((circle, index) =>
+            index === pinchCircleIndex ? { ...circle, radius: newRadius, mass: newRadius / 10 } : circle,
+          ),
+        )
+      } else if (e.touches.length === 1) {
+        // Single finger - treat like mouse move
+        const { x, y } = getCanvasCoordinates(e)
+
+        if (isCreatingCircle && creationStart && creatingCircleId) {
+          const dragDistance = distance(creationStart.x, creationStart.y, x, y)
+          const newRadius = Math.max(minRadius, Math.min(maxRadius, dragDistance))
+
+          setCircles((prev) =>
+            prev.map((circle) =>
+              circle.id === creatingCircleId ? { ...circle, radius: newRadius, mass: newRadius / 10 } : circle,
+            ),
+          )
+        } else if (moveableCircleIndex >= 0) {
+          const canvas = canvasRef.current
+          if (!canvas) return
+
+          const moveableCircle = getMoveableCircle()
+          if (moveableCircle) {
+            const newX = Math.max(
+              moveableCircle.radius,
+              Math.min(canvas.width - moveableCircle.radius, x - dragOffset.x),
+            )
+            const newY = Math.max(
+              moveableCircle.radius,
+              Math.min(canvas.height - moveableCircle.radius, y - dragOffset.y),
+            )
+
+            setCircles((prev) =>
+              prev.map((circle, index) => (index === moveableCircleIndex ? { ...circle, x: newX, y: newY } : circle)),
+            )
+          }
+        }
+      }
+    },
+    [
+      isPinching,
+      pinchCircleIndex,
+      pinchStartDistance,
+      pinchStartRadius,
+      minRadius,
+      maxRadius,
+      isCreatingCircle,
+      creationStart,
+      creatingCircleId,
+      moveableCircleIndex,
+      dragOffset,
+      getMoveableCircle,
+    ],
+  )
+
+  // Handle touch end
+  const handleTouchEnd = useCallback(
+    (e: TouchEvent) => {
+      e.preventDefault()
+
+      if (isPinching) {
+        setIsPinching(false)
+        setPinchStartDistance(0)
+        setPinchStartRadius(0)
+        setPinchCircleIndex(-1)
+      }
+
+      if (isCreatingCircle && creatingCircleId && e.touches.length === 0) {
+        setIsCreatingCircle(false)
+        setCreationStart(null)
+        setCreatingCircleId(null)
+      }
+    },
+    [isPinching, isCreatingCircle, creatingCircleId],
+  )
+
   const handleContainerClick = useCallback(() => {
     if (containerRef.current) {
       containerRef.current.focus()
@@ -794,6 +978,9 @@ export default function InteractiveCanvas(props) {
     canvas.addEventListener("mousedown", handleMouseDown)
     canvas.addEventListener("mousemove", handleMouseMove)
     canvas.addEventListener("mouseup", handleMouseUp)
+    canvas.addEventListener("touchstart", handleTouchStart, { passive: false })
+    canvas.addEventListener("touchmove", handleTouchMove, { passive: false })
+    canvas.addEventListener("touchend", handleTouchEnd, { passive: false })
     canvas.addEventListener("mouseleave", () => {
       setHoverCircleId(null)
     })
@@ -807,6 +994,9 @@ export default function InteractiveCanvas(props) {
       canvas.removeEventListener("mousedown", handleMouseDown)
       canvas.removeEventListener("mousemove", handleMouseMove)
       canvas.removeEventListener("mouseup", handleMouseUp)
+      canvas.removeEventListener("touchstart", handleTouchStart)
+      canvas.removeEventListener("touchmove", handleTouchMove)
+      canvas.removeEventListener("touchend", handleTouchEnd)
       canvas.removeEventListener("mouseleave", () => {
         setHoverCircleId(null)
       })
@@ -817,7 +1007,16 @@ export default function InteractiveCanvas(props) {
         clearTimeout(mouseInteractionTimeoutRef.current)
       }
     }
-  }, [handleMouseDown, handleMouseMove, handleMouseUp, handleKeyDown, draw])
+  }, [
+    handleMouseDown,
+    handleMouseMove,
+    handleMouseUp,
+    handleTouchStart,
+    handleTouchMove,
+    handleTouchEnd,
+    handleKeyDown,
+    draw,
+  ])
 
   // Redraw when circles change
   useEffect(() => {
@@ -892,7 +1091,7 @@ export default function InteractiveCanvas(props) {
       >
         <div>🎮 Controls:</div>
         <div>N = New • ↑↓←→ Select/Move • Space = Toggle Move • Enter = Gravity</div>
-        <div>1-9,0 = Resize • Click & Drag = Create/Move</div>
+        <div>1-9,0 = Resize • Click & Drag = Create/Move • Pinch = Resize</div>
         {selectedCircleIndex >= 0 && keyboardMode && <div>📍 Selected: Circle {selectedCircleIndex + 1}</div>}
         {moveableCircleIndex >= 0 && <div>🎯 Moving: Circle {moveableCircleIndex + 1}</div>}
         {physicsActive && <div>🌍 Gravity Active</div>}
