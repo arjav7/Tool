@@ -5,21 +5,16 @@ import { addPropertyControls, ControlType } from "framer"
 import { motion } from "framer-motion"
 
 interface Circle {
-    id: string
-    x: number
-    y: number
-    radius: number
-    color: string
-    isDragging: boolean
-    dragOffset: { x: number; y: number }
-    // Physics properties
-    vx: number // velocity x
-    vy: number // velocity y
-    mass: number
-    restitution: number // bounciness
-    isHeld: boolean
-    isSelected: boolean // New property for keyboard selection
-    isFloating: boolean // New property for floating circles
+  id: string
+  x: number
+  y: number
+  radius: number
+  color: string
+  state: "default" | "selected" | "moveable"
+  // Physics properties
+  vx: number
+  vy: number
+  mass: number
 }
 
 /**
@@ -30,1208 +25,972 @@ interface Circle {
  * @framerIntrinsicHeight 600
  */
 export default function InteractiveCanvas(props) {
-    const {
-        backgroundColor = "#f0f0f0",
-        physicsBackgroundColor = "#e8f4f8",
-        circleColor = "#3b82f6",
-        hoverColor = "#00ff00",
-        dragColor = "#ff0000",
-        strokeColor = "#000000",
-        heldColor = "#ffa500",
-        selectedColor = "#ff00ff",
-        floatingColor = "#00ffff",
-        minRadius = 20,
-        maxRadius = 100,
-        initialRadius = 40,
-        gravity = 0.5,
-        friction = 0.98,
-        bounciness = 0.7,
-        keyboardMoveSpeed = 5,
-        style,
-    } = props
+  const {
+    backgroundColor = "#f0f0f0",
+    physicsBackgroundColor = "#e8f4f8",
+    circleColor = "#3b82f6",
+    hoverColor = "#00ff00",
+    selectedColor = "#ff00ff",
+    moveableColor = "#ff0000",
+    strokeColor = "#000000",
+    minRadius = 20,
+    maxRadius = 100,
+    initialRadius = 40,
+    movementSpeed = 15,
+    gravity = 0.5,
+    friction = 0.98,
+    bounciness = 0.7,
+    style,
+  } = props
 
-    const containerRef = useRef<HTMLDivElement>(null)
-    const canvasRef = useRef<HTMLCanvasElement>(null)
-    const animationFrameRef = useRef<number>()
-    const lastClickTimeRef = useRef<number>(0)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const animationFrameRef = useRef<number>()
+  const mouseInteractionTimeoutRef = useRef<NodeJS.Timeout>()
 
-    const [circles, setCircles] = useState<Circle[]>([])
-    const [draggedCircle, setDraggedCircle] = useState<string | null>(null)
-    const [isMouseOver, setIsMouseOver] = useState(false)
-    const [hoverCircle, setHoverCircle] = useState<string | null>(null)
-    const [isCreatingCircle, setIsCreatingCircle] = useState(false)
-    const [creationStart, setCreationStart] = useState<{
-        x: number
-        y: number
-    } | null>(null)
-    const [creatingCircleId, setCreatingCircleId] = useState<string | null>(
-        null
-    )
-    const [physicsActive, setPhysicsActive] = useState(false)
-    const [selectedCircleIndex, setSelectedCircleIndex] = useState<number>(-1)
-    const [floatingCircleId, setFloatingCircleId] = useState<string | null>(
-        null
-    )
+  const [circles, setCircles] = useState<Circle[]>([])
+  const [selectedCircleIndex, setSelectedCircleIndex] = useState<number>(-1)
+  const [moveableCircleIndex, setMoveableCircleIndex] = useState<number>(-1)
+  const [hoverCircleId, setHoverCircleId] = useState<string | null>(null)
+  const [keyboardMode, setKeyboardMode] = useState(false)
+  const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
+  const [physicsActive, setPhysicsActive] = useState(false)
+  const [isCreatingCircle, setIsCreatingCircle] = useState(false)
+  const [creationStart, setCreationStart] = useState<{ x: number; y: number } | null>(null)
+  const [creatingCircleId, setCreatingCircleId] = useState<string | null>(null)
 
-    // Generate unique ID for circles
-    const generateId = () => Math.random().toString(36).substr(2, 9)
+  // Generate unique ID for circles
+  const generateId = () => Math.random().toString(36).substr(2, 9)
 
-    // Calculate distance between two points
-    const distance = (x1: number, y1: number, x2: number, y2: number) => {
-        return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+  // Calculate distance between two points
+  const distance = (x1: number, y1: number, x2: number, y2: number) => {
+    return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+  }
+
+  // Find circle at position
+  const findCircleAt = useCallback(
+    (x: number, y: number): { circle: Circle; index: number } | null => {
+      for (let i = circles.length - 1; i >= 0; i--) {
+        const circle = circles[i]
+        if (distance(x, y, circle.x, circle.y) <= circle.radius) {
+          return { circle, index: i }
+        }
+      }
+      return null
+    },
+    [circles],
+  )
+
+  // Find the most empty area on canvas
+  const findMostEmptyArea = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return { x: canvas?.width / 2 || 400, y: canvas?.height / 2 || 300 }
+
+    const gridSize = 50
+    const cols = Math.ceil(canvas.width / gridSize)
+    const rows = Math.ceil(canvas.height / gridSize)
+
+    let bestScore = Number.POSITIVE_INFINITY
+    let bestX = canvas.width / 2
+    let bestY = canvas.height / 2
+
+    // Check each grid cell
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const centerX = (col + 0.5) * gridSize
+        const centerY = (row + 0.5) * gridSize
+
+        // Skip if too close to edges
+        if (
+          centerX < initialRadius ||
+          centerX > canvas.width - initialRadius ||
+          centerY < initialRadius ||
+          centerY > canvas.height - initialRadius
+        ) {
+          continue
+        }
+
+        // Count overlapping circles
+        let score = 0
+        circles.forEach((circle) => {
+          const dist = distance(centerX, centerY, circle.x, circle.y)
+          if (dist < circle.radius + initialRadius + 20) {
+            score += circle.radius + initialRadius + 20 - dist
+          }
+        })
+
+        if (score < bestScore) {
+          bestScore = score
+          bestX = centerX
+          bestY = centerY
+        }
+      }
     }
 
-    // Find circle at position
-    const findCircleAt = useCallback(
-        (x: number, y: number): Circle | null => {
-            for (let i = circles.length - 1; i >= 0; i--) {
-                const circle = circles[i]
-                if (distance(x, y, circle.x, circle.y) <= circle.radius) {
-                    return circle
-                }
-            }
-            return null
-        },
-        [circles]
-    )
+    return { x: bestX, y: bestY }
+  }, [circles, initialRadius])
 
-    // Get canvas coordinates from event
-    const getCanvasCoordinates = (e: MouseEvent | TouchEvent) => {
-        const rect = canvasRef.current?.getBoundingClientRect()
-        if (!rect) return { x: 0, y: 0 }
+  // Get canvas coordinates from event
+  const getCanvasCoordinates = (e: MouseEvent | TouchEvent) => {
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return { x: 0, y: 0 }
 
-        let clientX, clientY
-        if (e instanceof MouseEvent) {
-            clientX = e.clientX
-            clientY = e.clientY
-        } else {
-            clientX = e.touches[0]?.clientX || e.changedTouches[0]?.clientX || 0
-            clientY = e.touches[0]?.clientY || e.changedTouches[0]?.clientY || 0
-        }
-
-        return {
-            x: clientX - rect.left,
-            y: clientY - rect.top,
-        }
+    let clientX, clientY
+    if (e instanceof MouseEvent) {
+      clientX = e.clientX
+      clientY = e.clientY
+    } else {
+      clientX = e.touches[0]?.clientX || e.changedTouches[0]?.clientX || 0
+      clientY = e.touches[0]?.clientY || e.changedTouches[0]?.clientY || 0
     }
 
-    // Get selected circle
-    const getSelectedCircle = useCallback(() => {
-        if (selectedCircleIndex >= 0 && selectedCircleIndex < circles.length) {
-            return circles[selectedCircleIndex]
+    return {
+      x: clientX - rect.left,
+      y: clientY - rect.top,
+    }
+  }
+
+  // Get selected circle
+  const getSelectedCircle = useCallback(() => {
+    if (selectedCircleIndex >= 0 && selectedCircleIndex < circles.length) {
+      return circles[selectedCircleIndex]
+    }
+    return null
+  }, [circles, selectedCircleIndex])
+
+  // Get moveable circle
+  const getMoveableCircle = useCallback(() => {
+    if (moveableCircleIndex >= 0 && moveableCircleIndex < circles.length) {
+      return circles[moveableCircleIndex]
+    }
+    return null
+  }, [circles, moveableCircleIndex])
+
+  // Find nearest circle in a direction
+  const findNearestCircleInDirection = useCallback(
+    (direction: "left" | "right" | "up" | "down") => {
+      const currentCircle = getSelectedCircle()
+      if (circles.length <= 1) return -1
+
+      if (!currentCircle) {
+        return 0
+      }
+
+      const candidates: Array<{
+        index: number
+        distance: number
+        alignmentScore: number
+      }> = []
+
+      circles.forEach((circle, index) => {
+        if (circle.id === currentCircle.id) return
+
+        const dx = circle.x - currentCircle.x
+        const dy = circle.y - currentCircle.y
+        const distance = Math.sqrt(dx * dx + dy * dy)
+
+        if (distance < 5) return
+
+        let isInDirection = false
+        let alignmentScore = 0
+
+        switch (direction) {
+          case "right":
+            isInDirection = dx > 0
+            alignmentScore = Math.abs(dy)
+            break
+          case "left":
+            isInDirection = dx < 0
+            alignmentScore = Math.abs(dy)
+            break
+          case "down":
+            isInDirection = dy > 0
+            alignmentScore = Math.abs(dx)
+            break
+          case "up":
+            isInDirection = dy < 0
+            alignmentScore = Math.abs(dx)
+            break
         }
-        return null
-    }, [circles, selectedCircleIndex])
 
-    // Handle keyboard events
-    const handleKeyDown = useCallback(
-        (e: KeyboardEvent) => {
-            const canvas = canvasRef.current
-            if (!canvas) return
+        if (isInDirection) {
+          candidates.push({
+            index,
+            distance,
+            alignmentScore,
+          })
+        }
+      })
 
-            switch (e.key) {
-                case "ArrowUp":
-                    e.preventDefault()
-                    if (floatingCircleId) {
-                        // Move floating circle up
-                        setCircles((prev) =>
-                            prev.map((circle) =>
-                                circle.id === floatingCircleId
-                                    ? {
-                                          ...circle,
-                                          y: Math.max(
-                                              circle.radius,
-                                              circle.y - keyboardMoveSpeed
-                                          ),
-                                      }
-                                    : circle
-                            )
-                        )
-                    } else {
-                        // Select previous circle
-                        setSelectedCircleIndex((prev) => {
-                            if (circles.length === 0) return -1
-                            return prev <= 0 ? circles.length - 1 : prev - 1
-                        })
-                    }
-                    break
+      if (candidates.length === 0) return -1
 
-                case "ArrowDown":
-                    e.preventDefault()
-                    if (floatingCircleId) {
-                        // Move floating circle down
-                        setCircles((prev) =>
-                            prev.map((circle) =>
-                                circle.id === floatingCircleId
-                                    ? {
-                                          ...circle,
-                                          y: Math.min(
-                                              canvas.height - circle.radius,
-                                              circle.y + keyboardMoveSpeed
-                                          ),
-                                      }
-                                    : circle
-                            )
-                        )
-                    } else {
-                        // Select next circle
-                        setSelectedCircleIndex((prev) => {
-                            if (circles.length === 0) return -1
-                            return prev >= circles.length - 1 ? 0 : prev + 1
-                        })
-                    }
-                    break
+      candidates.sort((a, b) => {
+        const alignmentDiff = a.alignmentScore - b.alignmentScore
+        if (Math.abs(alignmentDiff) > 20) {
+          return alignmentDiff
+        }
+        return a.distance - b.distance
+      })
 
-                case "ArrowLeft":
-                    e.preventDefault()
-                    if (floatingCircleId) {
-                        // Move floating circle left
-                        setCircles((prev) =>
-                            prev.map((circle) =>
-                                circle.id === floatingCircleId
-                                    ? {
-                                          ...circle,
-                                          x: Math.max(
-                                              circle.radius,
-                                              circle.x - keyboardMoveSpeed
-                                          ),
-                                      }
-                                    : circle
-                            )
-                        )
-                    }
-                    break
+      return candidates[0].index
+    },
+    [circles, getSelectedCircle],
+  )
 
-                case "ArrowRight":
-                    e.preventDefault()
-                    if (floatingCircleId) {
-                        // Move floating circle right
-                        setCircles((prev) =>
-                            prev.map((circle) =>
-                                circle.id === floatingCircleId
-                                    ? {
-                                          ...circle,
-                                          x: Math.min(
-                                              canvas.width - circle.radius,
-                                              circle.x + keyboardMoveSpeed
-                                          ),
-                                      }
-                                    : circle
-                            )
-                        )
-                    }
-                    break
+  // Clear selection when switching to mouse mode
+  const handleMouseInteraction = useCallback(() => {
+    if (keyboardMode) {
+      setKeyboardMode(false)
+      if (mouseInteractionTimeoutRef.current) {
+        clearTimeout(mouseInteractionTimeoutRef.current)
+      }
+      mouseInteractionTimeoutRef.current = setTimeout(() => {
+        setSelectedCircleIndex(-1)
+      }, 100)
+    }
+  }, [keyboardMode])
 
-                case " ": // Space key
-                    e.preventDefault()
-                    if (floatingCircleId) {
-                        // Place floating circle
-                        setCircles((prev) =>
-                            prev.map((circle) =>
-                                circle.id === floatingCircleId
-                                    ? { ...circle, isFloating: false }
-                                    : circle
-                            )
-                        )
-                        setFloatingCircleId(null)
-                    } else {
-                        // Create new floating circle
-                        const newCircleId = generateId()
-                        const newCircle: Circle = {
-                            id: newCircleId,
-                            x: canvas.width / 2,
-                            y: canvas.height / 2,
-                            radius: initialRadius,
-                            color: circleColor,
-                            isDragging: false,
-                            dragOffset: { x: 0, y: 0 },
-                            vx: 0,
-                            vy: 0,
-                            mass: initialRadius / 10,
-                            restitution: bounciness,
-                            isHeld: false,
-                            isSelected: false,
-                            isFloating: true,
-                        }
-                        setCircles((prev) => [...prev, newCircle])
-                        setFloatingCircleId(newCircleId)
-                    }
-                    break
+  // Physics simulation
+  const updatePhysics = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas || !physicsActive) return
 
-                case "Enter":
-                case "Return":
-                    e.preventDefault()
-                    // Toggle gravity
-                    if (circles.length > 0) {
-                        if (physicsActive) {
-                            setPhysicsActive(false)
-                        } else {
-                            // Reset all circles' physics properties
-                            setCircles((prev) =>
-                                prev.map((circle) => ({
-                                    ...circle,
-                                    vx: (Math.random() - 0.5) * 2,
-                                    vy: Math.random() * -2,
-                                    mass: circle.radius / 10,
-                                    restitution: bounciness,
-                                    isHeld: false,
-                                }))
-                            )
-                            setPhysicsActive(true)
-                        }
-                    }
-                    break
+    setCircles((prevCircles) => {
+      const newCircles = [...prevCircles]
+      let hasMovement = false
 
-                case "1":
-                case "2":
-                case "3":
-                case "4":
-                case "5":
-                case "6":
-                case "7":
-                case "8":
-                case "9":
-                case "0":
-                    e.preventDefault()
-                    const selectedCircle = getSelectedCircle()
-                    if (selectedCircle) {
-                        // Map number keys to radius sizes
-                        const numberValue =
-                            e.key === "0" ? 10 : Number.parseInt(e.key)
-                        const newRadius = Math.max(
-                            minRadius,
-                            Math.min(
-                                maxRadius,
-                                minRadius +
-                                    (numberValue - 1) *
-                                        ((maxRadius - minRadius) / 9)
-                            )
-                        )
+      // Apply gravity and update positions
+      for (let i = 0; i < newCircles.length; i++) {
+        const circle = newCircles[i]
 
-                        setCircles((prev) =>
-                            prev.map((circle) =>
-                                circle.id === selectedCircle.id
-                                    ? {
-                                          ...circle,
-                                          radius: newRadius,
-                                          mass: newRadius / 10,
-                                      }
-                                    : circle
-                            )
-                        )
-                    }
-                    break
+        // Skip physics for moveable circles
+        if (circle.state === "moveable") continue
 
-                default:
-                    break
+        // Apply gravity
+        circle.vy += gravity
+
+        // Apply friction
+        circle.vx *= friction
+        circle.vy *= friction
+
+        // Update position
+        circle.x += circle.vx
+        circle.y += circle.vy
+
+        // Check boundaries
+        if (circle.y + circle.radius > canvas.height) {
+          circle.y = canvas.height - circle.radius
+          circle.vy *= -bounciness
+          if (Math.abs(circle.vy) < 0.5) circle.vy = 0
+        }
+
+        if (circle.x - circle.radius < 0) {
+          circle.x = circle.radius
+          circle.vx *= -bounciness
+        }
+        if (circle.x + circle.radius > canvas.width) {
+          circle.x = canvas.width - circle.radius
+          circle.vx *= -bounciness
+        }
+
+        if (Math.abs(circle.vx) > 0.1 || Math.abs(circle.vy) > 0.1) {
+          hasMovement = true
+        }
+      }
+
+      // Circle-to-circle collisions
+      for (let i = 0; i < newCircles.length; i++) {
+        for (let j = i + 1; j < newCircles.length; j++) {
+          const circle1 = newCircles[i]
+          const circle2 = newCircles[j]
+
+          // Skip collisions if either circle is moveable
+          if (circle1.state === "moveable" || circle2.state === "moveable") continue
+
+          const dx = circle2.x - circle1.x
+          const dy = circle2.y - circle1.y
+          const dist = Math.sqrt(dx * dx + dy * dy)
+          const minDist = circle1.radius + circle2.radius
+
+          if (dist < minDist) {
+            hasMovement = true
+
+            const nx = dx / dist
+            const ny = dy / dist
+
+            const overlap = minDist - dist
+            const separationX = (overlap * nx) / 2
+            const separationY = (overlap * ny) / 2
+
+            circle1.x -= separationX
+            circle1.y -= separationY
+            circle2.x += separationX
+            circle2.y += separationY
+
+            const dvx = circle2.vx - circle1.vx
+            const dvy = circle2.vy - circle1.vy
+            const dvn = dvx * nx + dvy * ny
+
+            if (dvn > 0) continue
+
+            const impulse = (2 * dvn) / (circle1.mass + circle2.mass)
+
+            circle1.vx += impulse * circle2.mass * nx * bounciness
+            circle1.vy += impulse * circle2.mass * ny * bounciness
+            circle2.vx -= impulse * circle1.mass * nx * bounciness
+            circle2.vy -= impulse * circle1.mass * ny * bounciness
+          }
+        }
+      }
+
+      // Stop physics if no movement
+      if (!hasMovement) {
+        setTimeout(() => setPhysicsActive(false), 100)
+      }
+
+      return newCircles
+    })
+  }, [physicsActive, gravity, friction, bounciness])
+
+  // Physics animation loop
+  useEffect(() => {
+    if (physicsActive) {
+      const animate = () => {
+        updatePhysics()
+        animationFrameRef.current = requestAnimationFrame(animate)
+      }
+      animationFrameRef.current = requestAnimationFrame(animate)
+    } else {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current)
+      }
+    }
+
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current)
+      }
+    }
+  }, [physicsActive, updatePhysics])
+
+  // Handle keyboard events
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      const canvas = canvasRef.current
+      if (!canvas) return
+
+      setKeyboardMode(true)
+      if (mouseInteractionTimeoutRef.current) {
+        clearTimeout(mouseInteractionTimeoutRef.current)
+      }
+
+      const moveableCircle = getMoveableCircle()
+
+      switch (e.key) {
+        case "ArrowUp":
+          e.preventDefault()
+          if (moveableCircle) {
+            setCircles((prev) =>
+              prev.map((circle, index) =>
+                index === moveableCircleIndex
+                  ? { ...circle, y: Math.max(circle.radius, circle.y - movementSpeed) }
+                  : circle,
+              ),
+            )
+          } else {
+            if (circles.length > 0) {
+              const nearestIndex = findNearestCircleInDirection("up")
+              if (nearestIndex >= 0) {
+                setSelectedCircleIndex(nearestIndex)
+              } else if (selectedCircleIndex < 0) {
+                setSelectedCircleIndex(0)
+              }
             }
-        },
-        [
-            circles,
-            selectedCircleIndex,
-            floatingCircleId,
-            keyboardMoveSpeed,
-            initialRadius,
-            circleColor,
-            bounciness,
-            physicsActive,
-            minRadius,
-            maxRadius,
-            getSelectedCircle,
-        ]
-    )
+          }
+          break
 
-    // Update selected circle states
-    useEffect(() => {
-        setCircles((prev) =>
-            prev.map((circle, index) => ({
-                ...circle,
-                isSelected: index === selectedCircleIndex,
-            }))
-        )
-    }, [selectedCircleIndex])
-
-    // Physics simulation
-    const updatePhysics = useCallback(() => {
-        const canvas = canvasRef.current
-        if (!canvas || !physicsActive) return
-
-        setCircles((prevCircles) => {
-            const newCircles = [...prevCircles]
-            let hasMovement = false
-
-            // Apply gravity and update positions
-            for (let i = 0; i < newCircles.length; i++) {
-                const circle = newCircles[i]
-
-                // Skip physics for dragged circles, held circles, or floating circles
-                if (circle.isDragging || circle.isHeld || circle.isFloating)
-                    continue
-
-                // Apply gravity
-                circle.vy += gravity
-
-                // Apply friction
-                circle.vx *= friction
-                circle.vy *= friction
-
-                // Update position
-                circle.x += circle.vx
-                circle.y += circle.vy
-
-                // Check boundaries
-                // Bottom boundary
-                if (circle.y + circle.radius > canvas.height) {
-                    circle.y = canvas.height - circle.radius
-                    circle.vy *= -bounciness
-                    if (Math.abs(circle.vy) < 0.5) circle.vy = 0
-                }
-
-                // Side boundaries
-                if (circle.x - circle.radius < 0) {
-                    circle.x = circle.radius
-                    circle.vx *= -bounciness
-                }
-                if (circle.x + circle.radius > canvas.width) {
-                    circle.x = canvas.width - circle.radius
-                    circle.vx *= -bounciness
-                }
-
-                // Check if circle is still moving
-                if (Math.abs(circle.vx) > 0.1 || Math.abs(circle.vy) > 0.1) {
-                    hasMovement = true
-                }
+        case "ArrowDown":
+          e.preventDefault()
+          if (moveableCircle) {
+            setCircles((prev) =>
+              prev.map((circle, index) =>
+                index === moveableCircleIndex
+                  ? { ...circle, y: Math.min(canvas.height - circle.radius, circle.y + movementSpeed) }
+                  : circle,
+              ),
+            )
+          } else {
+            if (circles.length > 0) {
+              const nearestIndex = findNearestCircleInDirection("down")
+              if (nearestIndex >= 0) {
+                setSelectedCircleIndex(nearestIndex)
+              } else if (selectedCircleIndex < 0) {
+                setSelectedCircleIndex(0)
+              }
             }
+          }
+          break
 
-            // Circle-to-circle collisions (skip held and floating circles)
-            for (let i = 0; i < newCircles.length; i++) {
-                for (let j = i + 1; j < newCircles.length; j++) {
-                    const circle1 = newCircles[i]
-                    const circle2 = newCircles[j]
-
-                    // Skip collisions if either circle is dragged, held, or floating
-                    if (
-                        circle1.isDragging ||
-                        circle2.isDragging ||
-                        circle1.isHeld ||
-                        circle2.isHeld ||
-                        circle1.isFloating ||
-                        circle2.isFloating
-                    )
-                        continue
-
-                    const dx = circle2.x - circle1.x
-                    const dy = circle2.y - circle1.y
-                    const dist = Math.sqrt(dx * dx + dy * dy)
-                    const minDist = circle1.radius + circle2.radius
-
-                    if (dist < minDist) {
-                        hasMovement = true
-
-                        // Normalize collision vector
-                        const nx = dx / dist
-                        const ny = dy / dist
-
-                        // Separate circles
-                        const overlap = minDist - dist
-                        const separationX = (overlap * nx) / 2
-                        const separationY = (overlap * ny) / 2
-
-                        circle1.x -= separationX
-                        circle1.y -= separationY
-                        circle2.x += separationX
-                        circle2.y += separationY
-
-                        // Calculate relative velocity
-                        const dvx = circle2.vx - circle1.vx
-                        const dvy = circle2.vy - circle1.vy
-
-                        // Calculate relative velocity along collision normal
-                        const dvn = dvx * nx + dvy * ny
-
-                        // Do not resolve if velocities are separating
-                        if (dvn > 0) continue
-
-                        // Calculate collision impulse
-                        const impulse =
-                            (2 * dvn) / (circle1.mass + circle2.mass)
-
-                        // Apply impulse
-                        circle1.vx += impulse * circle2.mass * nx * bounciness
-                        circle1.vy += impulse * circle2.mass * ny * bounciness
-                        circle2.vx -= impulse * circle1.mass * nx * bounciness
-                        circle2.vy -= impulse * circle1.mass * ny * bounciness
-                    }
-                }
+        case "ArrowLeft":
+          e.preventDefault()
+          if (moveableCircle) {
+            setCircles((prev) =>
+              prev.map((circle, index) =>
+                index === moveableCircleIndex
+                  ? { ...circle, x: Math.max(circle.radius, circle.x - movementSpeed) }
+                  : circle,
+              ),
+            )
+          } else {
+            if (circles.length > 0) {
+              const nearestIndex = findNearestCircleInDirection("left")
+              if (nearestIndex >= 0) {
+                setSelectedCircleIndex(nearestIndex)
+              } else if (selectedCircleIndex < 0) {
+                setSelectedCircleIndex(0)
+              }
             }
+          }
+          break
 
-            // Check if there are any held or floating circles - if so, keep physics active
-            const hasHeldOrFloatingCircles = newCircles.some(
-                (circle) => circle.isHeld || circle.isFloating
+        case "ArrowRight":
+          e.preventDefault()
+          if (moveableCircle) {
+            setCircles((prev) =>
+              prev.map((circle, index) =>
+                index === moveableCircleIndex
+                  ? { ...circle, x: Math.min(canvas.width - circle.radius, circle.x + movementSpeed) }
+                  : circle,
+              ),
+            )
+          } else {
+            if (circles.length > 0) {
+              const nearestIndex = findNearestCircleInDirection("right")
+              if (nearestIndex >= 0) {
+                setSelectedCircleIndex(nearestIndex)
+              } else if (selectedCircleIndex < 0) {
+                setSelectedCircleIndex(0)
+              }
+            }
+          }
+          break
+
+        case " ": // Space key - toggle moveable state
+          e.preventDefault()
+          if (moveableCircleIndex >= 0) {
+            // Stop moving
+            setMoveableCircleIndex(-1)
+          } else if (selectedCircleIndex >= 0) {
+            // Start moving
+            setMoveableCircleIndex(selectedCircleIndex)
+            setSelectedCircleIndex(-1)
+          }
+          break
+
+        case "Enter":
+        case "Return": // Enter key - toggle gravity
+          e.preventDefault()
+          if (circles.length > 0) {
+            if (physicsActive) {
+              setPhysicsActive(false)
+            } else {
+              // Reset physics properties and start gravity
+              setCircles((prev) =>
+                prev.map((circle) => ({
+                  ...circle,
+                  vx: (Math.random() - 0.5) * 2,
+                  vy: Math.random() * -2,
+                  mass: circle.radius / 10,
+                })),
+              )
+              setPhysicsActive(true)
+            }
+          }
+          break
+
+        case "n":
+        case "N": // N key - create new object
+          e.preventDefault()
+          const emptyArea = findMostEmptyArea()
+          const newCircleId = generateId()
+          const newCircle: Circle = {
+            id: newCircleId,
+            x: emptyArea.x,
+            y: emptyArea.y,
+            radius: initialRadius,
+            color: circleColor,
+            state: "moveable",
+            vx: 0,
+            vy: 0,
+            mass: initialRadius / 10,
+          }
+          setCircles((prev) => [...prev, newCircle])
+          setMoveableCircleIndex(circles.length)
+          setSelectedCircleIndex(-1)
+          break
+
+        case "1":
+        case "2":
+        case "3":
+        case "4":
+        case "5":
+        case "6":
+        case "7":
+        case "8":
+        case "9":
+        case "0":
+          e.preventDefault()
+          const targetCircle = getMoveableCircle() || getSelectedCircle()
+          if (targetCircle) {
+            const numberValue = e.key === "0" ? 10 : Number.parseInt(e.key)
+            const newRadius = Math.max(
+              minRadius,
+              Math.min(maxRadius, minRadius + (numberValue - 1) * ((maxRadius - minRadius) / 9)),
             )
 
-            // Stop physics if no movement and no held/floating circles
-            if (!hasMovement && !hasHeldOrFloatingCircles) {
-                setTimeout(() => setPhysicsActive(false), 100)
-            }
+            const targetIndex = moveableCircleIndex >= 0 ? moveableCircleIndex : selectedCircleIndex
+            setCircles((prev) =>
+              prev.map((circle, index) =>
+                index === targetIndex ? { ...circle, radius: newRadius, mass: newRadius / 10 } : circle,
+              ),
+            )
+          }
+          break
 
-            return newCircles
+        default:
+          break
+      }
+    },
+    [
+      circles,
+      selectedCircleIndex,
+      moveableCircleIndex,
+      movementSpeed,
+      initialRadius,
+      circleColor,
+      minRadius,
+      maxRadius,
+      physicsActive,
+      getSelectedCircle,
+      getMoveableCircle,
+      findNearestCircleInDirection,
+      findMostEmptyArea,
+    ],
+  )
+
+  // Update circle states
+  useEffect(() => {
+    setCircles((prev) =>
+      prev.map((circle, index) => {
+        let state: Circle["state"] = "default"
+
+        if (index === moveableCircleIndex) {
+          state = "moveable"
+        } else if (index === selectedCircleIndex && keyboardMode) {
+          state = "selected"
+        } else if (circle.id === hoverCircleId && !keyboardMode) {
+          state = "selected"
+        }
+
+        return { ...circle, state }
+      }),
+    )
+  }, [selectedCircleIndex, moveableCircleIndex, hoverCircleId, keyboardMode])
+
+  // Drawing function
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
+
+    // Clear canvas with dynamic background
+    ctx.fillStyle = physicsActive ? physicsBackgroundColor : backgroundColor
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+    // Draw circles
+    circles.forEach((circle) => {
+      ctx.beginPath()
+      ctx.arc(circle.x, circle.y, circle.radius, 0, 2 * Math.PI)
+
+      // Fill
+      ctx.fillStyle = circle.color
+      ctx.fill()
+
+      // Stroke based on state
+      let strokeColorToUse = strokeColor
+      let lineWidth = 1
+
+      switch (circle.state) {
+        case "selected":
+          strokeColorToUse = selectedColor
+          lineWidth = 2
+          break
+        case "moveable":
+          strokeColorToUse = moveableColor
+          lineWidth = 3
+          break
+        default:
+          strokeColorToUse = strokeColor
+          lineWidth = 1
+      }
+
+      ctx.strokeStyle = strokeColorToUse
+      ctx.lineWidth = lineWidth
+      ctx.stroke()
+
+      // Draw selection indicator
+      if (circle.state === "selected") {
+        ctx.beginPath()
+        ctx.arc(circle.x, circle.y, circle.radius + 5, 0, 2 * Math.PI)
+        ctx.strokeStyle = selectedColor
+        ctx.lineWidth = 1
+        ctx.setLineDash([5, 5])
+        ctx.stroke()
+        ctx.setLineDash([])
+      }
+
+      // Draw moveable indicator
+      if (circle.state === "moveable") {
+        ctx.beginPath()
+        ctx.arc(circle.x, circle.y, circle.radius + 8, 0, 2 * Math.PI)
+        ctx.strokeStyle = moveableColor
+        ctx.lineWidth = 2
+        ctx.setLineDash([3, 3])
+        ctx.stroke()
+        ctx.setLineDash([])
+      }
+    })
+  }, [circles, backgroundColor, physicsBackgroundColor, strokeColor, selectedColor, moveableColor, physicsActive])
+
+  // Handle mouse down
+  const handleMouseDown = useCallback(
+    (e: MouseEvent) => {
+      e.preventDefault()
+      handleMouseInteraction()
+
+      const { x, y } = getCanvasCoordinates(e)
+      const result = findCircleAt(x, y)
+
+      if (result) {
+        const { circle, index } = result
+        // Make clicked circle moveable
+        setMoveableCircleIndex(index)
+        setSelectedCircleIndex(-1)
+        setPhysicsActive(false) // Stop physics when dragging
+
+        setDragOffset({
+          x: x - circle.x,
+          y: y - circle.y,
         })
-    }, [physicsActive, gravity, friction, bounciness])
-
-    // Physics animation loop
-    useEffect(() => {
-        if (physicsActive) {
-            const animate = () => {
-                updatePhysics()
-                animationFrameRef.current = requestAnimationFrame(animate)
-            }
-            animationFrameRef.current = requestAnimationFrame(animate)
-        } else {
-            if (animationFrameRef.current) {
-                cancelAnimationFrame(animationFrameRef.current)
-            }
+      } else {
+        // Start creating new circle
+        const newCircleId = generateId()
+        const newCircle: Circle = {
+          id: newCircleId,
+          x,
+          y,
+          radius: 5,
+          color: circleColor,
+          state: "default",
+          vx: 0,
+          vy: 0,
+          mass: 1,
         }
+        setCircles((prev) => [...prev, newCircle])
+        setIsCreatingCircle(true)
+        setCreationStart({ x, y })
+        setCreatingCircleId(newCircleId)
+      }
+    },
+    [findCircleAt, handleMouseInteraction, circleColor],
+  )
 
-        return () => {
-            if (animationFrameRef.current) {
-                cancelAnimationFrame(animationFrameRef.current)
-            }
-        }
-    }, [physicsActive, updatePhysics])
+  // Handle mouse move
+  const handleMouseMove = useCallback(
+    (e: MouseEvent) => {
+      const { x, y } = getCanvasCoordinates(e)
 
-    // Drawing function
-    const draw = useCallback(() => {
+      if (isCreatingCircle && creationStart && creatingCircleId) {
+        // Update radius of circle being created
+        const dragDistance = distance(creationStart.x, creationStart.y, x, y)
+        const newRadius = Math.max(minRadius, Math.min(maxRadius, dragDistance))
+
+        setCircles((prev) =>
+          prev.map((circle) =>
+            circle.id === creatingCircleId ? { ...circle, radius: newRadius, mass: newRadius / 10 } : circle,
+          ),
+        )
+      } else if (moveableCircleIndex >= 0 && e.buttons === 1) {
+        // Handle dragging moveable circle
         const canvas = canvasRef.current
         if (!canvas) return
 
-        const ctx = canvas.getContext("2d")
-        if (!ctx) return
+        const moveableCircle = getMoveableCircle()
+        if (moveableCircle) {
+          const newX = Math.max(moveableCircle.radius, Math.min(canvas.width - moveableCircle.radius, x - dragOffset.x))
+          const newY = Math.max(
+            moveableCircle.radius,
+            Math.min(canvas.height - moveableCircle.radius, y - dragOffset.y),
+          )
 
-        // Clear canvas with dynamic background
-        ctx.fillStyle = physicsActive ? physicsBackgroundColor : backgroundColor
-        ctx.fillRect(0, 0, canvas.width, canvas.height)
-
-        // Draw circles
-        circles.forEach((circle) => {
-            ctx.beginPath()
-            ctx.arc(circle.x, circle.y, circle.radius, 0, 2 * Math.PI)
-
-            // Fill
-            ctx.fillStyle = circle.color
-            ctx.fill()
-
-            // Stroke - different colors for different states
-            let strokeColorToUse = strokeColor
-            let lineWidth = 1
-
-            if (circle.isDragging) {
-                strokeColorToUse = dragColor
-                lineWidth = 3
-            } else if (circle.isFloating) {
-                strokeColorToUse = floatingColor
-                lineWidth = 3
-            } else if (circle.isSelected) {
-                strokeColorToUse = selectedColor
-                lineWidth = 2
-            } else if (circle.isHeld) {
-                strokeColorToUse = heldColor
-                lineWidth = 2
-            } else if (circle.id === hoverCircle) {
-                strokeColorToUse = hoverColor
-                lineWidth = 2
-            }
-
-            ctx.strokeStyle = strokeColorToUse
-            ctx.lineWidth = lineWidth
-            ctx.stroke()
-
-            // Draw selection indicator for selected circles
-            if (circle.isSelected && !circle.isFloating) {
-                ctx.beginPath()
-                ctx.arc(circle.x, circle.y, circle.radius + 5, 0, 2 * Math.PI)
-                ctx.strokeStyle = selectedColor
-                ctx.lineWidth = 1
-                ctx.setLineDash([5, 5])
-                ctx.stroke()
-                ctx.setLineDash([])
-            }
-
-            // Draw floating indicator
-            if (circle.isFloating) {
-                ctx.beginPath()
-                ctx.arc(circle.x, circle.y, circle.radius + 8, 0, 2 * Math.PI)
-                ctx.strokeStyle = floatingColor
-                ctx.lineWidth = 1
-                ctx.setLineDash([3, 3])
-                ctx.stroke()
-                ctx.setLineDash([])
-            }
-        })
-    }, [
-        circles,
-        backgroundColor,
-        physicsBackgroundColor,
-        hoverColor,
-        dragColor,
-        strokeColor,
-        heldColor,
-        selectedColor,
-        floatingColor,
-        physicsActive,
-    ])
-
-    // Handle double click for physics
-    const handleDoubleClick = useCallback(() => {
-        if (circles.length === 0) return
-
-        // Reset all circles' physics properties and add some randomness
-        setCircles((prev) =>
-            prev.map((circle) => ({
-                ...circle,
-                vx: (Math.random() - 0.5) * 2,
-                vy: Math.random() * -2,
-                mass: circle.radius / 10,
-                restitution: bounciness,
-                isHeld: false,
-            }))
-        )
-
-        setPhysicsActive(true)
-    }, [circles.length, bounciness])
-
-    // Handle mouse down with double-click detection
-    const handleMouseDown = useCallback(
-        (e: MouseEvent) => {
-            e.preventDefault()
-            const currentTime = Date.now()
-            const timeDiff = currentTime - lastClickTimeRef.current
-
-            // Check for double click (within 300ms)
-            if (timeDiff < 300) {
-                handleDoubleClick()
-                lastClickTimeRef.current = 0
-                return
-            }
-
-            lastClickTimeRef.current = currentTime
-
-            const { x, y } = getCanvasCoordinates(e)
-            const clickedCircle = findCircleAt(x, y)
-
-            if (clickedCircle) {
-                // Stop physics when dragging
-                setPhysicsActive(false)
-
-                // Start dragging existing circle
-                setDraggedCircle(clickedCircle.id)
-                setCircles((prev) =>
-                    prev.map((circle) =>
-                        circle.id === clickedCircle.id
-                            ? {
-                                  ...circle,
-                                  isDragging: true,
-                                  dragOffset: {
-                                      x: x - circle.x,
-                                      y: y - circle.y,
-                                  },
-                                  vx: 0,
-                                  vy: 0,
-                                  isHeld: false,
-                                  isFloating: false,
-                              }
-                            : circle
-                    )
-                )
-
-                // Select the clicked circle
-                const clickedIndex = circles.findIndex(
-                    (c) => c.id === clickedCircle.id
-                )
-                setSelectedCircleIndex(clickedIndex)
-            } else {
-                // Start creating new circle
-                const newCircleId = generateId()
-                const newCircle: Circle = {
-                    id: newCircleId,
-                    x,
-                    y,
-                    radius: 5,
-                    color: circleColor,
-                    isDragging: false,
-                    dragOffset: { x: 0, y: 0 },
-                    vx: 0,
-                    vy: 0,
-                    mass: 1,
-                    restitution: bounciness,
-                    isHeld: physicsActive,
-                    isSelected: false,
-                    isFloating: false,
-                }
-                setCircles((prev) => [...prev, newCircle])
-                setIsCreatingCircle(true)
-                setCreationStart({ x, y })
-                setCreatingCircleId(newCircleId)
-            }
-        },
-        [
-            findCircleAt,
-            circleColor,
-            bounciness,
-            handleDoubleClick,
-            physicsActive,
-            circles,
-        ]
-    )
-
-    // Handle mouse move
-    const handleMouseMove = useCallback(
-        (e: MouseEvent) => {
-            const { x, y } = getCanvasCoordinates(e)
-
-            if (isCreatingCircle && creationStart && creatingCircleId) {
-                // Update radius of circle being created based on drag distance
-                const dragDistance = distance(
-                    creationStart.x,
-                    creationStart.y,
-                    x,
-                    y
-                )
-                const newRadius = Math.max(
-                    minRadius,
-                    Math.min(maxRadius, dragDistance)
-                )
-
-                setCircles((prev) =>
-                    prev.map((circle) =>
-                        circle.id === creatingCircleId
-                            ? {
-                                  ...circle,
-                                  radius: newRadius,
-                                  mass: newRadius / 10,
-                              }
-                            : circle
-                    )
-                )
-            } else {
-                // Update hover state
-                const hoveredCircle = findCircleAt(x, y)
-                setHoverCircle(hoveredCircle?.id || null)
-
-                // Handle dragging existing circles
-                if (draggedCircle) {
-                    setCircles((prev) =>
-                        prev.map((circle) =>
-                            circle.id === draggedCircle && circle.isDragging
-                                ? {
-                                      ...circle,
-                                      x: x - circle.dragOffset.x,
-                                      y: y - circle.dragOffset.y,
-                                  }
-                                : circle
-                        )
-                    )
-                }
-            }
-        },
-        [
-            draggedCircle,
-            findCircleAt,
-            isCreatingCircle,
-            creationStart,
-            creatingCircleId,
-            minRadius,
-            maxRadius,
-        ]
-    )
-
-    // Handle mouse up
-    const handleMouseUp = useCallback(() => {
-        if (isCreatingCircle && creatingCircleId) {
-            // Finish creating circle and release it into physics
-            setCircles((prev) =>
-                prev.map((circle) =>
-                    circle.id === creatingCircleId
-                        ? { ...circle, isHeld: false }
-                        : circle
-                )
-            )
-            setIsCreatingCircle(false)
-            setCreationStart(null)
-            setCreatingCircleId(null)
-        } else {
-            // Finish dragging
-            setDraggedCircle(null)
-            setCircles((prev) =>
-                prev.map((circle) => ({
-                    ...circle,
-                    isDragging: false,
-                    dragOffset: { x: 0, y: 0 },
-                }))
-            )
+          setCircles((prev) =>
+            prev.map((circle, index) => (index === moveableCircleIndex ? { ...circle, x: newX, y: newY } : circle)),
+          )
         }
-    }, [isCreatingCircle, creatingCircleId])
+      } else {
+        // Handle hover
+        handleMouseInteraction()
+        const result = findCircleAt(x, y)
+        setHoverCircleId(result?.circle.id || null)
+      }
+    },
+    [
+      moveableCircleIndex,
+      dragOffset,
+      findCircleAt,
+      handleMouseInteraction,
+      getMoveableCircle,
+      isCreatingCircle,
+      creationStart,
+      creatingCircleId,
+      minRadius,
+      maxRadius,
+    ],
+  )
 
-    // Handle wheel for resizing
-    const handleWheel = useCallback(
-        (e: WheelEvent) => {
-            e.preventDefault()
-            const { x, y } = getCanvasCoordinates(e as any)
-            const hoveredCircle = findCircleAt(x, y)
+  // Handle mouse up
+  const handleMouseUp = useCallback(() => {
+    if (isCreatingCircle && creatingCircleId) {
+      // Finish creating circle
+      setIsCreatingCircle(false)
+      setCreationStart(null)
+      setCreatingCircleId(null)
+    }
+  }, [isCreatingCircle, creatingCircleId])
 
-            if (hoveredCircle) {
-                const scale = e.deltaY > 0 ? 0.9 : 1.1
-                setCircles((prev) =>
-                    prev.map((circle) =>
-                        circle.id === hoveredCircle.id
-                            ? {
-                                  ...circle,
-                                  radius: Math.max(
-                                      minRadius,
-                                      Math.min(maxRadius, circle.radius * scale)
-                                  ),
-                                  mass:
-                                      Math.max(
-                                          minRadius,
-                                          Math.min(
-                                              maxRadius,
-                                              circle.radius * scale
-                                          )
-                                      ) / 10,
-                              }
-                            : circle
-                    )
-                )
-            }
-        },
-        [findCircleAt, minRadius, maxRadius]
-    )
+  const handleContainerClick = useCallback(() => {
+    if (containerRef.current) {
+      containerRef.current.focus()
+    }
+  }, [])
 
-    // Touch handlers (simplified for brevity)
-    const handleTouchStart = useCallback(
-        (e: TouchEvent) => {
-            e.preventDefault()
-            if (e.touches.length === 1) {
-                const { x, y } = getCanvasCoordinates(e)
-                const clickedCircle = findCircleAt(x, y)
+  // Setup canvas and event listeners
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const container = containerRef.current
+    if (!canvas || !container) return
 
-                if (clickedCircle) {
-                    setPhysicsActive(false)
-                    setDraggedCircle(clickedCircle.id)
-                    setCircles((prev) =>
-                        prev.map((circle) =>
-                            circle.id === clickedCircle.id
-                                ? {
-                                      ...circle,
-                                      isDragging: true,
-                                      dragOffset: {
-                                          x: x - circle.x,
-                                          y: y - circle.y,
-                                      },
-                                      vx: 0,
-                                      vy: 0,
-                                      isHeld: false,
-                                      isFloating: false,
-                                  }
-                                : circle
-                        )
-                    )
-
-                    const clickedIndex = circles.findIndex(
-                        (c) => c.id === clickedCircle.id
-                    )
-                    setSelectedCircleIndex(clickedIndex)
-                } else {
-                    const newCircleId = generateId()
-                    const newCircle: Circle = {
-                        id: newCircleId,
-                        x,
-                        y,
-                        radius: 5,
-                        color: circleColor,
-                        isDragging: false,
-                        dragOffset: { x: 0, y: 0 },
-                        vx: 0,
-                        vy: 0,
-                        mass: 1,
-                        restitution: bounciness,
-                        isHeld: physicsActive,
-                        isSelected: false,
-                        isFloating: false,
-                    }
-                    setCircles((prev) => [...prev, newCircle])
-                    setIsCreatingCircle(true)
-                    setCreationStart({ x, y })
-                    setCreatingCircleId(newCircleId)
-                }
-            }
-        },
-        [findCircleAt, circleColor, bounciness, physicsActive, circles]
-    )
-
-    const handleTouchMove = useCallback(
-        (e: TouchEvent) => {
-            e.preventDefault()
-            if (e.touches.length === 1) {
-                const { x, y } = getCanvasCoordinates(e)
-
-                if (isCreatingCircle && creationStart && creatingCircleId) {
-                    const dragDistance = distance(
-                        creationStart.x,
-                        creationStart.y,
-                        x,
-                        y
-                    )
-                    const newRadius = Math.max(
-                        minRadius,
-                        Math.min(maxRadius, dragDistance)
-                    )
-
-                    setCircles((prev) =>
-                        prev.map((circle) =>
-                            circle.id === creatingCircleId
-                                ? {
-                                      ...circle,
-                                      radius: newRadius,
-                                      mass: newRadius / 10,
-                                  }
-                                : circle
-                        )
-                    )
-                } else if (draggedCircle) {
-                    setCircles((prev) =>
-                        prev.map((circle) =>
-                            circle.id === draggedCircle && circle.isDragging
-                                ? {
-                                      ...circle,
-                                      x: x - circle.dragOffset.x,
-                                      y: y - circle.dragOffset.y,
-                                  }
-                                : circle
-                        )
-                    )
-                }
-            }
-        },
-        [
-            draggedCircle,
-            isCreatingCircle,
-            creationStart,
-            creatingCircleId,
-            minRadius,
-            maxRadius,
-        ]
-    )
-
-    const handleTouchEnd = useCallback(
-        (e: TouchEvent) => {
-            e.preventDefault()
-            if (isCreatingCircle && creatingCircleId) {
-                setCircles((prev) =>
-                    prev.map((circle) =>
-                        circle.id === creatingCircleId
-                            ? { ...circle, isHeld: false }
-                            : circle
-                    )
-                )
-                setIsCreatingCircle(false)
-                setCreationStart(null)
-                setCreatingCircleId(null)
-            } else {
-                setDraggedCircle(null)
-                setCircles((prev) =>
-                    prev.map((circle) => ({
-                        ...circle,
-                        isDragging: false,
-                        dragOffset: { x: 0, y: 0 },
-                    }))
-                )
-            }
-        },
-        [isCreatingCircle, creatingCircleId]
-    )
-
-    const handleContainerClick = useCallback(() => {
-        // Ensure container has focus for keyboard events
-        if (containerRef.current) {
-            containerRef.current.focus()
-        }
-    }, [])
-
-    // Setup canvas and event listeners
-    useEffect(() => {
-        const canvas = canvasRef.current
-        const container = containerRef.current
-        if (!canvas || !container) return
-
-        // Set canvas size
-        const resizeCanvas = () => {
-            const rect = container.getBoundingClientRect()
-            canvas.width = rect.width
-            canvas.height = rect.height
-            draw()
-        }
-
-        resizeCanvas()
-
-        // Add event listeners
-        canvas.addEventListener("mousedown", handleMouseDown)
-        canvas.addEventListener("mousemove", handleMouseMove)
-        canvas.addEventListener("mouseup", handleMouseUp)
-        canvas.addEventListener("wheel", handleWheel, { passive: false })
-        canvas.addEventListener("touchstart", handleTouchStart, {
-            passive: false,
-        })
-        canvas.addEventListener("touchmove", handleTouchMove, {
-            passive: false,
-        })
-        canvas.addEventListener("touchend", handleTouchEnd, { passive: false })
-        canvas.addEventListener("mouseenter", () => setIsMouseOver(true))
-        canvas.addEventListener("mouseleave", () => {
-            setIsMouseOver(false)
-            setHoverCircle(null)
-        })
-
-        // Add keyboard event listener to container instead of window
-        container.addEventListener("keydown", handleKeyDown)
-
-        // Auto-focus the container when component mounts
-        container.focus()
-
-        // Handle window resize
-        window.addEventListener("resize", resizeCanvas)
-
-        return () => {
-            canvas.removeEventListener("mousedown", handleMouseDown)
-            canvas.removeEventListener("mousemove", handleMouseMove)
-            canvas.removeEventListener("mouseup", handleMouseUp)
-            canvas.removeEventListener("wheel", handleWheel)
-            canvas.removeEventListener("touchstart", handleTouchStart)
-            canvas.removeEventListener("touchmove", handleTouchMove)
-            canvas.removeEventListener("touchend", handleTouchEnd)
-            canvas.removeEventListener("mouseenter", () => setIsMouseOver(true))
-            canvas.removeEventListener("mouseleave", () => {
-                setIsMouseOver(false)
-                setHoverCircle(null)
-            })
-            container.removeEventListener("keydown", handleKeyDown)
-            window.removeEventListener("resize", resizeCanvas)
-        }
-    }, [
-        handleMouseDown,
-        handleMouseMove,
-        handleMouseUp,
-        handleWheel,
-        handleTouchStart,
-        handleTouchMove,
-        handleTouchEnd,
-        handleKeyDown,
-        draw,
-        handleContainerClick,
-    ])
-
-    // Redraw when circles change
-    useEffect(() => {
-        draw()
-    }, [draw])
-
-    // Determine cursor style
-    const getCursorStyle = () => {
-        if (isCreatingCircle) return "crosshair"
-        if (draggedCircle) return "grabbing"
-        if (hoverCircle) return "grab"
-        return "crosshair"
+    const resizeCanvas = () => {
+      const rect = container.getBoundingClientRect()
+      canvas.width = rect.width
+      canvas.height = rect.height
+      draw()
     }
 
-    return (
-        <motion.div
-            ref={containerRef}
-            onClick={handleContainerClick}
-            style={{
-                ...style,
-                width: "100%",
-                height: "100%",
-                minHeight: "400px",
-                position: "relative",
-                overflow: "hidden",
-                cursor: isMouseOver ? getCursorStyle() : "default",
-                outline: "none", // Remove focus outline
-            }}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.3 }}
-            tabIndex={0} // Make div focusable for keyboard events
+    resizeCanvas()
+
+    canvas.addEventListener("mousedown", handleMouseDown)
+    canvas.addEventListener("mousemove", handleMouseMove)
+    canvas.addEventListener("mouseup", handleMouseUp)
+    canvas.addEventListener("mouseleave", () => {
+      setHoverCircleId(null)
+    })
+
+    container.addEventListener("keydown", handleKeyDown)
+    container.focus()
+
+    window.addEventListener("resize", resizeCanvas)
+
+    return () => {
+      canvas.removeEventListener("mousedown", handleMouseDown)
+      canvas.removeEventListener("mousemove", handleMouseMove)
+      canvas.removeEventListener("mouseup", handleMouseUp)
+      canvas.removeEventListener("mouseleave", () => {
+        setHoverCircleId(null)
+      })
+      container.removeEventListener("keydown", handleKeyDown)
+      window.removeEventListener("resize", resizeCanvas)
+
+      if (mouseInteractionTimeoutRef.current) {
+        clearTimeout(mouseInteractionTimeoutRef.current)
+      }
+    }
+  }, [handleMouseDown, handleMouseMove, handleMouseUp, handleKeyDown, draw])
+
+  // Redraw when circles change
+  useEffect(() => {
+    draw()
+  }, [draw])
+
+  return (
+    <motion.div
+      ref={containerRef}
+      onClick={handleContainerClick}
+      style={{
+        ...style,
+        width: "100%",
+        height: "100%",
+        minHeight: "400px",
+        position: "relative",
+        overflow: "hidden",
+        outline: "none",
+        cursor: "crosshair",
+      }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.3 }}
+      tabIndex={0}
+    >
+      <canvas
+        ref={canvasRef}
+        style={{
+          display: "block",
+          width: "100%",
+          height: "100%",
+          touchAction: "none",
+        }}
+      />
+
+      {/* Instructions overlay */}
+      {circles.length === 0 && (
+        <div
+          style={{
+            position: "absolute",
+            top: "50%",
+            left: "50%",
+            transform: "translate(-50%, -50%)",
+            textAlign: "center",
+            pointerEvents: "none",
+            color: "#666",
+            fontSize: "16px",
+          }}
         >
-            <canvas
-                ref={canvasRef}
-                style={{
-                    display: "block",
-                    width: "100%",
-                    height: "100%",
-                    touchAction: "none",
-                }}
-            />
+          <div>Press 'N' to create a new circle or click and drag</div>
+          <div style={{ fontSize: "14px", marginTop: "8px" }}>
+            Arrow keys to select • Space to toggle move • Enter for gravity • Numbers to resize
+          </div>
+        </div>
+      )}
 
-            {/* Instructions overlay */}
-            {circles.length === 0 && (
-                <div
-                    style={{
-                        position: "absolute",
-                        top: "50%",
-                        left: "50%",
-                        transform: "translate(-50%, -50%)",
-                        textAlign: "center",
-                        pointerEvents: "none",
-                        color: "#666",
-                        fontSize: "16px",
-                    }}
-                >
-                    <div>Click and drag to create circles</div>
-                    <div style={{ fontSize: "14px", marginTop: "8px" }}>
-                        Double-click for gravity • Arrow keys to select •
-                        Numbers to resize • Space for floating • Enter to toggle
-                        gravity
-                    </div>
-                </div>
-            )}
-
-            {/* Keyboard controls help */}
-            <div
-                style={{
-                    position: "absolute",
-                    top: "10px",
-                    left: "10px",
-                    background: "rgba(0,0,0,0.7)",
-                    color: "white",
-                    padding: "10px",
-                    borderRadius: "5px",
-                    fontSize: "12px",
-                    pointerEvents: "none",
-                    opacity: circles.length > 0 ? 1 : 0,
-                    transition: "opacity 0.3s",
-                }}
-            >
-                <div>🎮 Keyboard Controls:</div>
-                <div>
-                    ↑↓ Select circles • 1-9,0 Resize • Space Float • Enter
-                    Gravity
-                </div>
-                {selectedCircleIndex >= 0 && (
-                    <div>Selected: Circle {selectedCircleIndex + 1}</div>
-                )}
-                {floatingCircleId && (
-                    <div>🎈 Floating mode - use arrows to move</div>
-                )}
-            </div>
-        </motion.div>
-    )
+      {/* Controls help */}
+      <div
+        style={{
+          position: "absolute",
+          top: "10px",
+          left: "10px",
+          background: "rgba(0,0,0,0.7)",
+          color: "white",
+          padding: "10px",
+          borderRadius: "5px",
+          fontSize: "12px",
+          pointerEvents: "none",
+          opacity: circles.length > 0 ? 1 : 0,
+          transition: "opacity 0.3s",
+        }}
+      >
+        <div>🎮 Controls:</div>
+        <div>N = New • ↑↓←→ Select/Move • Space = Toggle Move • Enter = Gravity</div>
+        <div>1-9,0 = Resize • Click & Drag = Create/Move</div>
+        {selectedCircleIndex >= 0 && keyboardMode && <div>📍 Selected: Circle {selectedCircleIndex + 1}</div>}
+        {moveableCircleIndex >= 0 && <div>🎯 Moving: Circle {moveableCircleIndex + 1}</div>}
+        {physicsActive && <div>🌍 Gravity Active</div>}
+      </div>
+    </motion.div>
+  )
 }
 
 // Property Controls
 addPropertyControls(InteractiveCanvas, {
-    backgroundColor: {
-        type: ControlType.Color,
-        title: "Background",
-        defaultValue: "#f0f0f0",
-    },
-    physicsBackgroundColor: {
-        type: ControlType.Color,
-        title: "Physics Background",
-        defaultValue: "#e8f4f8",
-    },
-    circleColor: {
-        type: ControlType.Color,
-        title: "Circle Color",
-        defaultValue: "#3b82f6",
-    },
-    hoverColor: {
-        type: ControlType.Color,
-        title: "Hover Color",
-        defaultValue: "#00ff00",
-    },
-    dragColor: {
-        type: ControlType.Color,
-        title: "Drag Color",
-        defaultValue: "#ff0000",
-    },
-    strokeColor: {
-        type: ControlType.Color,
-        title: "Stroke Color",
-        defaultValue: "#000000",
-    },
-    heldColor: {
-        type: ControlType.Color,
-        title: "Held Color",
-        defaultValue: "#ffa500",
-    },
-    selectedColor: {
-        type: ControlType.Color,
-        title: "Selected Color",
-        defaultValue: "#ff00ff",
-    },
-    floatingColor: {
-        type: ControlType.Color,
-        title: "Floating Color",
-        defaultValue: "#00ffff",
-    },
-    keyboardMoveSpeed: {
-        type: ControlType.Number,
-        title: "Keyboard Speed",
-        min: 1,
-        max: 20,
-        step: 1,
-        unit: "px",
-        defaultValue: 5,
-    },
-    initialRadius: {
-        type: ControlType.Number,
-        title: "Initial Radius",
-        min: 10,
-        max: 200,
-        step: 5,
-        unit: "px",
-        defaultValue: 40,
-    },
-    minRadius: {
-        type: ControlType.Number,
-        title: "Min Radius",
-        min: 5,
-        max: 100,
-        step: 5,
-        unit: "px",
-        defaultValue: 20,
-    },
-    maxRadius: {
-        type: ControlType.Number,
-        title: "Max Radius",
-        min: 50,
-        max: 300,
-        step: 10,
-        unit: "px",
-        defaultValue: 100,
-    },
-    gravity: {
-        type: ControlType.Number,
-        title: "Gravity",
-        min: 0.1,
-        max: 2,
-        step: 0.1,
-        defaultValue: 0.5,
-    },
-    friction: {
-        type: ControlType.Number,
-        title: "Friction",
-        min: 0.9,
-        max: 1,
-        step: 0.01,
-        defaultValue: 0.98,
-    },
-    bounciness: {
-        type: ControlType.Number,
-        title: "Bounciness",
-        min: 0,
-        max: 1,
-        step: 0.1,
-        defaultValue: 0.7,
-    },
+  backgroundColor: {
+    type: ControlType.Color,
+    title: "Background",
+    defaultValue: "#f0f0f0",
+  },
+  physicsBackgroundColor: {
+    type: ControlType.Color,
+    title: "Physics Background",
+    defaultValue: "#e8f4f8",
+  },
+  circleColor: {
+    type: ControlType.Color,
+    title: "Circle Color",
+    defaultValue: "#3b82f6",
+  },
+  selectedColor: {
+    type: ControlType.Color,
+    title: "Selected/Hover Color",
+    defaultValue: "#ff00ff",
+  },
+  moveableColor: {
+    type: ControlType.Color,
+    title: "Moveable Color",
+    defaultValue: "#ff0000",
+  },
+  strokeColor: {
+    type: ControlType.Color,
+    title: "Default Stroke Color",
+    defaultValue: "#000000",
+  },
+  movementSpeed: {
+    type: ControlType.Number,
+    title: "Movement Speed",
+    min: 5,
+    max: 50,
+    step: 5,
+    unit: "px",
+    defaultValue: 15,
+  },
+  initialRadius: {
+    type: ControlType.Number,
+    title: "Initial Radius",
+    min: 10,
+    max: 200,
+    step: 5,
+    unit: "px",
+    defaultValue: 40,
+  },
+  minRadius: {
+    type: ControlType.Number,
+    title: "Min Radius",
+    min: 5,
+    max: 100,
+    step: 5,
+    unit: "px",
+    defaultValue: 20,
+  },
+  maxRadius: {
+    type: ControlType.Number,
+    title: "Max Radius",
+    min: 50,
+    max: 300,
+    step: 10,
+    unit: "px",
+    defaultValue: 100,
+  },
+  gravity: {
+    type: ControlType.Number,
+    title: "Gravity",
+    min: 0.1,
+    max: 2,
+    step: 0.1,
+    defaultValue: 0.5,
+  },
+  friction: {
+    type: ControlType.Number,
+    title: "Friction",
+    min: 0.9,
+    max: 1,
+    step: 0.01,
+    defaultValue: 0.98,
+  },
+  bounciness: {
+    type: ControlType.Number,
+    title: "Bounciness",
+    min: 0,
+    max: 1,
+    step: 0.1,
+    defaultValue: 0.7,
+  },
 })
