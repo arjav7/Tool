@@ -5,19 +5,19 @@ import { addPropertyControls, ControlType } from "framer"
 import { motion } from "framer-motion"
 
 interface Element {
-  id: string
-  x: number
-  y: number
-  radius: number
-  color: string
-  state: "default" | "selected" | "moveable"
-  type: "circle" | "text"
-  text?: string
-  fontSize?: number
-  // Physics properties
-  vx: number
-  vy: number
-  mass: number
+    id: string
+    x: number
+    y: number
+    radius: number
+    color: string
+    state: "default" | "selected" | "moveable"
+    type: "circle" | "text"
+    text?: string
+    fontSize?: number
+    // Physics properties
+    vx: number
+    vy: number
+    mass: number
 }
 
 /**
@@ -28,2060 +28,2360 @@ interface Element {
  * @framerIntrinsicHeight 600
  */
 export default function InteractiveCanvas(props) {
-  const {
-    backgroundColor = "#f0f0f0",
-    physicsBackgroundColor = "#e8f4f8",
-    circleColor = "#3b82f6",
-    textColor = "#2563eb",
-    hoverColor = "#00ff00",
-    selectedColor = "#ff00ff",
-    moveableColor = "#ff0000",
-    strokeColor = "#000000",
-    strokeWidth = 2,
-    selectedStrokeWidth = 3,
-    moveableStrokeWidth = 4,
-    overlapColor2 = "#ff6b35",
-    overlapColor3 = "#ff3535",
-    overlapColor4 = "#ff0000",
-    minRadius = 20,
-    maxRadius = 100,
-    initialRadius = 40,
-    fontSize = 32,
-    movementSpeed = 15,
-    gravity = 0.5,
-    friction = 0.98,
-    bounciness = 0.7,
-    style,
-  } = props
+    const {
+        backgroundColor = "#f0f0f0",
+        physicsBackgroundColor = "#e8f4f8",
+        circleColor = "#3b82f6",
+        textColor = "#2563eb",
+        hoverColor = "#00ff00",
+        selectedColor = "#ff00ff",
+        moveableColor = "#ff0000",
+        strokeColor = "#000000",
+        strokeWidth = 2,
+        selectedStrokeWidth = 3,
+        moveableStrokeWidth = 4,
+        overlapColor2 = "#ff6b35",
+        overlapColor3 = "#ff3535",
+        overlapColor4 = "#ff0000",
+        minRadius = 20,
+        maxRadius = 100,
+        initialRadius = 40,
+        fontSize = 32,
+        movementSpeed = 15,
+        gravity = 0.5,
+        friction = 0.98,
+        bounciness = 0.7,
+        style,
+    } = props
 
-  const containerRef = useRef<HTMLDivElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const animationFrameRef = useRef<number>()
-  const mouseInteractionTimeoutRef = useRef<NodeJS.Timeout>()
+    const containerRef = useRef<HTMLDivElement>(null)
+    const canvasRef = useRef<HTMLCanvasElement>(null)
+    const animationFrameRef = useRef<number>()
+    const mouseInteractionTimeoutRef = useRef<NodeJS.Timeout>()
 
-  const [elements, setElements] = useState<Element[]>([])
-  const [selectedElementIndex, setSelectedElementIndex] = useState<number>(-1)
-  const [moveableElementIndex, setMoveableElementIndex] = useState<number>(-1)
-  const [hoverElementId, setHoverElementId] = useState<string | null>(null)
-  const [keyboardMode, setKeyboardMode] = useState(false)
-  const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({
-    x: 0,
-    y: 0,
-  })
-  const [physicsActive, setPhysicsActive] = useState(false)
-  const [isCreatingElement, setIsCreatingElement] = useState(false)
-  const [creationStart, setCreationStart] = useState<{
-    x: number
-    y: number
-  } | null>(null)
-  const creatingElementId = useRef<string | null>(null)
-  const [gravityDirection, setGravityDirection] = useState<"down" | "up" | "left" | "right">("down")
-
-  // Pinch gesture state
-  const [isPinching, setIsPinching] = useState(false)
-  const [pinchStartDistance, setPinchStartDistance] = useState(0)
-  const [pinchStartRadius, setPinchStartRadius] = useState(0)
-  const [pinchElementIndex, setPinchElementIndex] = useState(-1)
-
-  const [isClearing, setIsClearing] = useState(false)
-  const [wasPhysicsActiveBeforeClearing, setWasPhysicsActiveBeforeClearing] = useState(false)
-  const [lastUsedRadius, setLastUsedRadius] = useState(initialRadius)
-
-  // Generate unique ID for elements
-  const generateId = () => Math.random().toString(36).substr(2, 9)
-
-  // Calculate distance between two points
-  const distance = (x1: number, y1: number, x2: number, y2: number) => {
-    return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-  }
-
-  // Calculate distance between two touch points
-  const getTouchDistance = (touch1: Touch, touch2: Touch) => {
-    const dx = touch2.clientX - touch1.clientX
-    const dy = touch2.clientY - touch1.clientY
-    return Math.sqrt(dx * dx + dy * dy)
-  }
-
-  // Get center point between two touches
-  const getTouchCenter = (touch1: Touch, touch2: Touch) => {
-    const rect = canvasRef.current?.getBoundingClientRect()
-    if (!rect) return { x: 0, y: 0 }
-
-    return {
-      x: (touch1.clientX + touch2.clientX) / 2 - rect.left,
-      y: (touch1.clientY + touch2.clientY) / 2 - rect.top,
-    }
-  }
-
-  // Get text dimensions
-  const getTextDimensions = useCallback((text: string, fontSize: number) => {
-    const canvas = canvasRef.current
-    if (!canvas) return { width: 0, height: 0 }
-
-    const ctx = canvas.getContext("2d")
-    if (!ctx) return { width: 0, height: 0 }
-
-    ctx.font = `${fontSize}px Arial`
-    const metrics = ctx.measureText(text)
-    return {
-      width: metrics.width,
-      height: fontSize,
-    }
-  }, [])
-
-  // Calculate center of mass for all elements
-  const calculateCenterOfMass = useCallback(() => {
-    if (elements.length === 0) {
-      const canvas = canvasRef.current
-      if (!canvas) return { x: 400, y: 300 }
-      const rect = canvas.getBoundingClientRect()
-      return { x: rect.width / 2, y: rect.height / 2 }
-    }
-
-    let totalMass = 0
-    let weightedX = 0
-    let weightedY = 0
-
-    elements.forEach((element) => {
-      const mass = element.mass || element.radius / 10
-      totalMass += mass
-      weightedX += element.x * mass
-      weightedY += element.y * mass
+    const [elements, setElements] = useState<Element[]>([])
+    const [selectedElementIndex, setSelectedElementIndex] = useState<number>(-1)
+    const [moveableElementIndex, setMoveableElementIndex] = useState<number>(-1)
+    const [hoverElementId, setHoverElementId] = useState<string | null>(null)
+    const [keyboardMode, setKeyboardMode] = useState(false)
+    const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({
+        x: 0,
+        y: 0,
     })
+    const [physicsActive, setPhysicsActive] = useState(false)
+    const [isCreatingElement, setIsCreatingElement] = useState(false)
+    const [creationStart, setCreationStart] = useState<{
+        x: number
+        y: number
+    } | null>(null)
+    const creatingElementId = useRef<string | null>(null)
+    const [gravityDirection, setGravityDirection] = useState<
+        "down" | "up" | "left" | "right"
+    >("down")
 
-    return {
-      x: weightedX / totalMass,
-      y: weightedY / totalMass,
+    // Pinch gesture state
+    const [isPinching, setIsPinching] = useState(false)
+    const [pinchStartDistance, setPinchStartDistance] = useState(0)
+    const [pinchStartRadius, setPinchStartRadius] = useState(0)
+    const [pinchElementIndex, setPinchElementIndex] = useState(-1)
+
+    const [isClearing, setIsClearing] = useState(false)
+    const [wasPhysicsActiveBeforeClearing, setWasPhysicsActiveBeforeClearing] =
+        useState(false)
+    const [lastUsedRadius, setLastUsedRadius] = useState(initialRadius)
+
+    // Generate unique ID for elements
+    const generateId = () => Math.random().toString(36).substr(2, 9)
+
+    // Calculate distance between two points
+    const distance = (x1: number, y1: number, x2: number, y2: number) => {
+        return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
     }
-  }, [elements])
 
-  // Check if two circles overlap
-  const circlesOverlap = useCallback((circle1: Element, circle2: Element) => {
-    if (circle1.type !== "circle" || circle2.type !== "circle") return false
-    const dist = distance(circle1.x, circle1.y, circle2.x, circle2.y)
-    return dist < circle1.radius + circle2.radius
-  }, [])
+    // Calculate distance between two touch points
+    const getTouchDistance = (touch1: Touch, touch2: Touch) => {
+        const dx = touch2.clientX - touch1.clientX
+        const dy = touch2.clientY - touch1.clientY
+        return Math.sqrt(dx * dx + dy * dy)
+    }
 
-  // Get overlap color based on count
-  const getOverlapColor = useCallback(
-    (overlapCount: number) => {
-      if (overlapCount === 1) return overlapColor2
-      if (overlapCount === 2) return overlapColor3
-      return overlapColor4 // 3 or more overlaps
-    },
-    [overlapColor2, overlapColor3, overlapColor4],
-  )
+    // Get center point between two touches
+    const getTouchCenter = (touch1: Touch, touch2: Touch) => {
+        const rect = canvasRef.current?.getBoundingClientRect()
+        if (!rect) return { x: 0, y: 0 }
 
-  // Remove or comment out the drawCircleIntersection useCallback hook entirely.
-  // It's around line 181.
-  // const drawCircleIntersection = useCallback(...)
-
-  // Modify the characterOverlaps useCallback hook (around line 253):
-  // Rename it to countCharacterOverlaps and change its return type and logic.
-  const countCharacterOverlaps = useCallback(
-    (
-      charX: number,
-      charY: number,
-      charWidth: number,
-      charHeight: number,
-      allElements: Element[],
-      excludeId: string,
-    ): number => {
-      let overlapCount = 0
-      allElements.forEach((otherElement) => {
-        if (otherElement.id === excludeId) return
-
-        if (otherElement.type === "circle") {
-          // Check if character bounding box intersects with circle
-          const closestX = Math.max(charX - charWidth / 2, Math.min(otherElement.x, charX + charWidth / 2))
-          const closestY = Math.max(charY - charHeight / 2, Math.min(otherElement.y, charY + charHeight / 2))
-          const distanceToRect = distance(
-            // Ensure 'distance' is in scope or add to deps if it's a prop/state
-            otherElement.x,
-            otherElement.y,
-            closestX,
-            closestY,
-          )
-          if (distanceToRect < otherElement.radius) {
-            overlapCount++
-          }
-        } else if (otherElement.type === "text" && otherElement.text) {
-          // Check if two character bounding boxes overlap
-          const otherTextDims = getTextDimensions(otherElement.text, otherElement.fontSize || fontSize)
-          const otherRect = {
-            left: otherElement.x - otherTextDims.width / 2,
-            right: otherElement.x + otherTextDims.width / 2,
-            top: otherElement.y - otherTextDims.height / 2,
-            bottom: otherElement.y + otherTextDims.height / 2,
-          }
-
-          const charRect = {
-            left: charX - charWidth / 2,
-            right: charX + charWidth / 2,
-            top: charY - charHeight / 2,
-            bottom: charY + charHeight / 2,
-          }
-
-          if (
-            !(
-              charRect.right < otherRect.left ||
-              otherRect.right < charRect.left ||
-              charRect.bottom < otherRect.top ||
-              otherRect.bottom < charRect.top
-            )
-          ) {
-            overlapCount++
-          }
+        return {
+            x: (touch1.clientX + touch2.clientX) / 2 - rect.left,
+            y: (touch1.clientY + touch2.clientY) / 2 - rect.top,
         }
-      })
-      return overlapCount
-    },
-    [getTextDimensions, fontSize, distance], // Added 'distance' to dependencies
-  )
+    }
 
-  // Find element at position
-  const findElementAt = useCallback(
-    (x: number, y: number): { element: Element; index: number } | null => {
-      for (let i = elements.length - 1; i >= 0; i--) {
-        const element = elements[i]
+    // Get text dimensions
+    const getTextDimensions = useCallback((text: string, fontSize: number) => {
+        const canvas = canvasRef.current
+        if (!canvas) return { width: 0, height: 0 }
 
-        if (element.type === "circle") {
-          if (distance(x, y, element.x, element.y) <= element.radius) {
-            return { element, index: i }
-          }
-        } else if (element.type === "text" && element.text) {
-          const dims = getTextDimensions(element.text, element.fontSize || fontSize)
-          const halfWidth = dims.width / 2
-          const halfHeight = dims.height / 2
+        const ctx = canvas.getContext("2d")
+        if (!ctx) return { width: 0, height: 0 }
 
-          if (
-            x >= element.x - halfWidth &&
-            x <= element.x + halfWidth &&
-            y >= element.y - halfHeight &&
-            y <= element.y + halfHeight
-          ) {
-            return { element, index: i }
-          }
+        ctx.font = `${fontSize}px Arial`
+        const metrics = ctx.measureText(text)
+        return {
+            width: metrics.width,
+            height: fontSize,
         }
-      }
-      return null
-    },
-    [elements, getTextDimensions, fontSize],
-  )
+    }, [])
 
-  const findMostEmptyArea = useCallback(
-    (newElementRadius: number = initialRadius) => {
-      const canvas = canvasRef.current
-      if (!canvas) return { x: 400, y: 300 }
+    // Calculate center of mass for all elements
+    const calculateCenterOfMass = useCallback(() => {
+        if (elements.length === 0) {
+            const canvas = canvasRef.current
+            if (!canvas) return { x: 400, y: 300 }
+            const rect = canvas.getBoundingClientRect()
+            return { x: rect.width / 2, y: rect.height / 2 }
+        }
 
-      const rect = canvas.getBoundingClientRect()
-      const canvasCenter = { x: rect.width / 2, y: rect.height / 2 }
-      const currentCenterOfMass = calculateCenterOfMass()
+        let totalMass = 0
+        let weightedX = 0
+        let weightedY = 0
 
-      // Use smaller grid size for better distribution when there are many elements
-      const baseGridSize = Math.max(30, newElementRadius * 1.2)
-      const gridSize = elements.length > 20 ? baseGridSize * 0.7 : baseGridSize
+        elements.forEach((element) => {
+            const mass = element.mass || element.radius / 10
+            totalMass += mass
+            weightedX += element.x * mass
+            weightedY += element.y * mass
+        })
 
-      const logicalWidth = rect.width
-      const logicalHeight = rect.height
-      const cols = Math.floor(logicalWidth / gridSize)
-      const rows = Math.floor(logicalHeight / gridSize)
+        return {
+            x: weightedX / totalMass,
+            y: weightedY / totalMass,
+        }
+    }, [elements])
 
-      let bestScore = Number.POSITIVE_INFINITY
-      let bestX = canvasCenter.x
-      let bestY = canvasCenter.y
+    // Check if two circles overlap
+    const circlesOverlap = useCallback((circle1: Element, circle2: Element) => {
+        if (circle1.type !== "circle" || circle2.type !== "circle") return false
+        const dist = distance(circle1.x, circle1.y, circle2.x, circle2.y)
+        return dist < circle1.radius + circle2.radius
+    }, [])
 
-      // Expand search if we have many elements
-      const searchPasses = elements.length > 15 ? 2 : 1
+    // Get overlap color based on count
+    const getOverlapColor = useCallback(
+        (overlapCount: number) => {
+            if (overlapCount === 1) return overlapColor2
+            if (overlapCount === 2) return overlapColor3
+            return overlapColor4 // 3 or more overlaps
+        },
+        [overlapColor2, overlapColor3, overlapColor4]
+    )
 
-      for (let pass = 0; pass < searchPasses; pass++) {
-        const margin = pass === 0 ? newElementRadius + 15 : newElementRadius + 5
+    // Remove or comment out the drawCircleIntersection useCallback hook entirely.
+    // It's around line 181.
+    // const drawCircleIntersection = useCallback(...)
 
-        // Check each grid cell
-        for (let row = 0; row < rows; row++) {
-          for (let col = 0; col < cols; col++) {
-            const centerX = col * gridSize + gridSize / 2
-            const centerY = row * gridSize + gridSize / 2
+    // Modify the characterOverlaps useCallback hook (around line 253):
+    // Rename it to countCharacterOverlaps and change its return type and logic.
+    const countCharacterOverlaps = useCallback(
+        (
+            charX: number,
+            charY: number,
+            charWidth: number,
+            charHeight: number,
+            allElements: Element[],
+            excludeId: string
+        ): number => {
+            let overlapCount = 0
+            allElements.forEach((otherElement) => {
+                if (otherElement.id === excludeId) return
 
-            // Skip if too close to edges (but be more lenient on second pass)
-            if (
-              centerX < margin ||
-              centerX > logicalWidth - margin ||
-              centerY < margin ||
-              centerY > logicalHeight - margin
-            ) {
-              continue
+                if (otherElement.type === "circle") {
+                    // Check if character bounding box intersects with circle
+                    const closestX = Math.max(
+                        charX - charWidth / 2,
+                        Math.min(otherElement.x, charX + charWidth / 2)
+                    )
+                    const closestY = Math.max(
+                        charY - charHeight / 2,
+                        Math.min(otherElement.y, charY + charHeight / 2)
+                    )
+                    const distanceToRect = distance(
+                        // Ensure 'distance' is in scope or add to deps if it's a prop/state
+                        otherElement.x,
+                        otherElement.y,
+                        closestX,
+                        closestY
+                    )
+                    if (distanceToRect < otherElement.radius) {
+                        overlapCount++
+                    }
+                } else if (otherElement.type === "text" && otherElement.text) {
+                    // Check if two character bounding boxes overlap
+                    const otherTextDims = getTextDimensions(
+                        otherElement.text,
+                        otherElement.fontSize || fontSize
+                    )
+                    const otherRect = {
+                        left: otherElement.x - otherTextDims.width / 2,
+                        right: otherElement.x + otherTextDims.width / 2,
+                        top: otherElement.y - otherTextDims.height / 2,
+                        bottom: otherElement.y + otherTextDims.height / 2,
+                    }
+
+                    const charRect = {
+                        left: charX - charWidth / 2,
+                        right: charX + charWidth / 2,
+                        top: charY - charHeight / 2,
+                        bottom: charY + charHeight / 2,
+                    }
+
+                    if (
+                        !(
+                            charRect.right < otherRect.left ||
+                            otherRect.right < charRect.left ||
+                            charRect.bottom < otherRect.top ||
+                            otherRect.bottom < charRect.top
+                        )
+                    ) {
+                        overlapCount++
+                    }
+                }
+            })
+            return overlapCount
+        },
+        [getTextDimensions, fontSize, distance] // Added 'distance' to dependencies
+    )
+
+    // Find element at position
+    const findElementAt = useCallback(
+        (x: number, y: number): { element: Element; index: number } | null => {
+            for (let i = elements.length - 1; i >= 0; i--) {
+                const element = elements[i]
+
+                if (element.type === "circle") {
+                    if (
+                        distance(x, y, element.x, element.y) <= element.radius
+                    ) {
+                        return { element, index: i }
+                    }
+                } else if (element.type === "text" && element.text) {
+                    const dims = getTextDimensions(
+                        element.text,
+                        element.fontSize || fontSize
+                    )
+                    const halfWidth = dims.width / 2
+                    const halfHeight = dims.height / 2
+
+                    if (
+                        x >= element.x - halfWidth &&
+                        x <= element.x + halfWidth &&
+                        y >= element.y - halfHeight &&
+                        y <= element.y + halfHeight
+                    ) {
+                        return { element, index: i }
+                    }
+                }
+            }
+            return null
+        },
+        [elements, getTextDimensions, fontSize]
+    )
+
+    const findMostEmptyArea = useCallback(
+        (newElementRadius: number = initialRadius) => {
+            const canvas = canvasRef.current
+            if (!canvas) return { x: 400, y: 300 }
+
+            const rect = canvas.getBoundingClientRect()
+            const canvasCenter = { x: rect.width / 2, y: rect.height / 2 }
+            const currentCenterOfMass = calculateCenterOfMass()
+
+            // Use smaller grid size for better distribution when there are many elements
+            const baseGridSize = Math.max(30, newElementRadius * 1.2)
+            const gridSize =
+                elements.length > 20 ? baseGridSize * 0.7 : baseGridSize
+
+            const logicalWidth = rect.width
+            const logicalHeight = rect.height
+            const cols = Math.floor(logicalWidth / gridSize)
+            const rows = Math.floor(logicalHeight / gridSize)
+
+            let bestScore = Number.POSITIVE_INFINITY
+            let bestX = canvasCenter.x
+            let bestY = canvasCenter.y
+
+            // Expand search if we have many elements
+            const searchPasses = elements.length > 15 ? 2 : 1
+
+            for (let pass = 0; pass < searchPasses; pass++) {
+                const margin =
+                    pass === 0 ? newElementRadius + 15 : newElementRadius + 5
+
+                // Check each grid cell
+                for (let row = 0; row < rows; row++) {
+                    for (let col = 0; col < cols; col++) {
+                        const centerX = col * gridSize + gridSize / 2
+                        const centerY = row * gridSize + gridSize / 2
+
+                        // Skip if too close to edges (but be more lenient on second pass)
+                        if (
+                            centerX < margin ||
+                            centerX > logicalWidth - margin ||
+                            centerY < margin ||
+                            centerY > logicalHeight - margin
+                        ) {
+                            continue
+                        }
+
+                        // Calculate overlap penalty
+                        let overlapPenalty = 0
+                        let minDistanceToAnyElement = Number.POSITIVE_INFINITY
+
+                        elements.forEach((element) => {
+                            const dist = distance(
+                                centerX,
+                                centerY,
+                                element.x,
+                                element.y
+                            )
+                            minDistanceToAnyElement = Math.min(
+                                minDistanceToAnyElement,
+                                dist
+                            )
+
+                            const minDistance =
+                                element.radius +
+                                newElementRadius +
+                                (pass === 0 ? 20 : 10)
+                            if (dist < minDistance) {
+                                overlapPenalty +=
+                                    Math.pow(minDistance - dist, 2) *
+                                    (pass === 0 ? 100 : 50)
+                            }
+                        })
+
+                        // On second pass, allow some overlap if necessary
+                        if (pass === 0 && overlapPenalty > 0) {
+                            continue
+                        }
+
+                        // Calculate balance score
+                        const newMass = newElementRadius / 10
+                        const totalMass =
+                            elements.reduce(
+                                (sum, el) => sum + (el.mass || el.radius / 10),
+                                0
+                            ) + newMass
+
+                        let balanceBonus = 0
+                        if (totalMass > 0) {
+                            const currentTotalMass = totalMass - newMass
+                            const newCenterOfMass = {
+                                x:
+                                    currentTotalMass > 0
+                                        ? (currentCenterOfMass.x *
+                                              currentTotalMass +
+                                              centerX * newMass) /
+                                          totalMass
+                                        : centerX,
+                                y:
+                                    currentTotalMass > 0
+                                        ? (currentCenterOfMass.y *
+                                              currentTotalMass +
+                                              centerY * newMass) /
+                                          totalMass
+                                        : centerY,
+                            }
+
+                            const currentDistanceFromCenter = distance(
+                                currentCenterOfMass.x,
+                                currentCenterOfMass.y,
+                                canvasCenter.x,
+                                canvasCenter.y
+                            )
+                            const newDistanceFromCenter = distance(
+                                newCenterOfMass.x,
+                                newCenterOfMass.y,
+                                canvasCenter.x,
+                                canvasCenter.y
+                            )
+                            balanceBonus = Math.max(
+                                0,
+                                (currentDistanceFromCenter -
+                                    newDistanceFromCenter) *
+                                    2
+                            )
+                        }
+
+                        // Add distance from other elements as a bonus (spread them out)
+                        const spreadBonus = Math.min(
+                            minDistanceToAnyElement * 0.1,
+                            50
+                        )
+
+                        const totalScore =
+                            overlapPenalty -
+                            balanceBonus -
+                            spreadBonus +
+                            Math.random() * 5
+
+                        if (totalScore < bestScore) {
+                            bestScore = totalScore
+                            bestX = centerX
+                            bestY = centerY
+                        }
+                    }
+                }
+
+                // If we found a good spot on first pass, don't do second pass
+                if (bestScore < 1000) break
             }
 
-            // Calculate overlap penalty
-            let overlapPenalty = 0
-            let minDistanceToAnyElement = Number.POSITIVE_INFINITY
+            return { x: bestX, y: bestY }
+        },
+        [elements, initialRadius, calculateCenterOfMass, distance]
+    )
 
-            elements.forEach((element) => {
-              const dist = distance(centerX, centerY, element.x, element.y)
-              minDistanceToAnyElement = Math.min(minDistanceToAnyElement, dist)
+    // Get canvas coordinates from event
+    const getCanvasCoordinates = (e: MouseEvent | TouchEvent) => {
+        const rect = canvasRef.current?.getBoundingClientRect()
+        if (!rect) return { x: 0, y: 0 }
 
-              const minDistance = element.radius + newElementRadius + (pass === 0 ? 20 : 10)
-              if (dist < minDistance) {
-                overlapPenalty += Math.pow(minDistance - dist, 2) * (pass === 0 ? 100 : 50)
-              }
+        let clientX, clientY
+        if (e instanceof MouseEvent) {
+            clientX = e.clientX
+            clientY = e.clientY
+        } else {
+            clientX = e.touches[0]?.clientX || e.changedTouches[0]?.clientX || 0
+            clientY = e.touches[0]?.clientY || e.changedTouches[0]?.clientY || 0
+        }
+
+        return {
+            x: clientX - rect.left,
+            y: clientY - rect.top,
+        }
+    }
+
+    // Get selected element
+    const getSelectedElement = useCallback(() => {
+        if (
+            selectedElementIndex >= 0 &&
+            selectedElementIndex < elements.length
+        ) {
+            return elements[selectedElementIndex]
+        }
+        return null
+    }, [elements, selectedElementIndex])
+
+    // Get moveable element
+    const getMoveableElement = useCallback(() => {
+        if (
+            moveableElementIndex >= 0 &&
+            moveableElementIndex < elements.length
+        ) {
+            return elements[moveableElementIndex]
+        }
+        return null
+    }, [elements, moveableElementIndex])
+
+    // Find nearest element in a direction
+    const findNearestElementInDirection = useCallback(
+        (direction: "left" | "right" | "up" | "down") => {
+            const currentElement = getSelectedElement()
+            if (elements.length <= 1) return -1
+
+            if (!currentElement) {
+                return 0
+            }
+
+            const candidates: Array<{
+                index: number
+                distance: number
+                alignmentScore: number
+            }> = []
+
+            elements.forEach((element, index) => {
+                if (element.id === currentElement.id) return
+
+                const dx = element.x - currentElement.x
+                const dy = element.y - currentElement.y
+                const distance = Math.sqrt(dx * dx + dy * dy)
+
+                if (distance < 5) return
+
+                let isInDirection = false
+                let alignmentScore = 0
+
+                switch (direction) {
+                    case "right":
+                        isInDirection = dx > 0
+                        alignmentScore = Math.abs(dy)
+                        break
+                    case "left":
+                        isInDirection = dx < 0
+                        alignmentScore = Math.abs(dy)
+                        break
+                    case "down":
+                        isInDirection = dy > 0
+                        alignmentScore = Math.abs(dx)
+                        break
+                    case "up":
+                        isInDirection = dy < 0
+                        alignmentScore = Math.abs(dx)
+                        break
+                }
+
+                if (isInDirection) {
+                    candidates.push({
+                        index,
+                        distance,
+                        alignmentScore,
+                    })
+                }
             })
 
-            // On second pass, allow some overlap if necessary
-            if (pass === 0 && overlapPenalty > 0) {
-              continue
-            }
-
-            // Calculate balance score
-            const newMass = newElementRadius / 10
-            const totalMass = elements.reduce((sum, el) => sum + (el.mass || el.radius / 10), 0) + newMass
-
-            let balanceBonus = 0
-            if (totalMass > 0) {
-              const currentTotalMass = totalMass - newMass
-              const newCenterOfMass = {
-                x:
-                  currentTotalMass > 0
-                    ? (currentCenterOfMass.x * currentTotalMass + centerX * newMass) / totalMass
-                    : centerX,
-                y:
-                  currentTotalMass > 0
-                    ? (currentCenterOfMass.y * currentTotalMass + centerY * newMass) / totalMass
-                    : centerY,
-              }
-
-              const currentDistanceFromCenter = distance(
-                currentCenterOfMass.x,
-                currentCenterOfMass.y,
-                canvasCenter.x,
-                canvasCenter.y,
-              )
-              const newDistanceFromCenter = distance(
-                newCenterOfMass.x,
-                newCenterOfMass.y,
-                canvasCenter.x,
-                canvasCenter.y,
-              )
-              balanceBonus = Math.max(0, (currentDistanceFromCenter - newDistanceFromCenter) * 2)
-            }
-
-            // Add distance from other elements as a bonus (spread them out)
-            const spreadBonus = Math.min(minDistanceToAnyElement * 0.1, 50)
-
-            const totalScore = overlapPenalty - balanceBonus - spreadBonus + Math.random() * 5
-
-            if (totalScore < bestScore) {
-              bestScore = totalScore
-              bestX = centerX
-              bestY = centerY
-            }
-          }
-        }
-
-        // If we found a good spot on first pass, don't do second pass
-        if (bestScore < 1000) break
-      }
-
-      return { x: bestX, y: bestY }
-    },
-    [elements, initialRadius, calculateCenterOfMass],
-  )
-
-  // Get canvas coordinates from event
-  const getCanvasCoordinates = (e: MouseEvent | TouchEvent) => {
-    const rect = canvasRef.current?.getBoundingClientRect()
-    if (!rect) return { x: 0, y: 0 }
-
-    let clientX, clientY
-    if (e instanceof MouseEvent) {
-      clientX = e.clientX
-      clientY = e.clientY
-    } else {
-      clientX = e.touches[0]?.clientX || e.changedTouches[0]?.clientX || 0
-      clientY = e.touches[0]?.clientY || e.changedTouches[0]?.clientY || 0
-    }
-
-    return {
-      x: clientX - rect.left,
-      y: clientY - rect.top,
-    }
-  }
-
-  // Get selected element
-  const getSelectedElement = useCallback(() => {
-    if (selectedElementIndex >= 0 && selectedElementIndex < elements.length) {
-      return elements[selectedElementIndex]
-    }
-    return null
-  }, [elements, selectedElementIndex])
-
-  // Get moveable element
-  const getMoveableElement = useCallback(() => {
-    if (moveableElementIndex >= 0 && moveableElementIndex < elements.length) {
-      return elements[moveableElementIndex]
-    }
-    return null
-  }, [elements, moveableElementIndex])
-
-  // Find nearest element in a direction
-  const findNearestElementInDirection = useCallback(
-    (direction: "left" | "right" | "up" | "down") => {
-      const currentElement = getSelectedElement()
-      if (elements.length <= 1) return -1
-
-      if (!currentElement) {
-        return 0
-      }
-
-      const candidates: Array<{
-        index: number
-        distance: number
-        alignmentScore: number
-      }> = []
-
-      elements.forEach((element, index) => {
-        if (element.id === currentElement.id) return
-
-        const dx = element.x - currentElement.x
-        const dy = element.y - currentElement.y
-        const distance = Math.sqrt(dx * dx + dy * dy)
-
-        if (distance < 5) return
-
-        let isInDirection = false
-        let alignmentScore = 0
-
-        switch (direction) {
-          case "right":
-            isInDirection = dx > 0
-            alignmentScore = Math.abs(dy)
-            break
-          case "left":
-            isInDirection = dx < 0
-            alignmentScore = Math.abs(dy)
-            break
-          case "down":
-            isInDirection = dy > 0
-            alignmentScore = Math.abs(dx)
-            break
-          case "up":
-            isInDirection = dy < 0
-            alignmentScore = Math.abs(dx)
-            break
-        }
-
-        if (isInDirection) {
-          candidates.push({
-            index,
-            distance,
-            alignmentScore,
-          })
-        }
-      })
-
-      if (candidates.length === 0) return -1
-
-      candidates.sort((a, b) => {
-        const alignmentDiff = a.alignmentScore - b.alignmentScore
-        if (Math.abs(alignmentDiff) > 20) {
-          return alignmentDiff
-        }
-        return a.distance - b.distance
-      })
-
-      return candidates[0].index
-    },
-    [elements, getSelectedElement],
-  )
-
-  // Clear selection when switching to mouse mode
-  const handleMouseInteraction = useCallback(() => {
-    if (keyboardMode) {
-      setKeyboardMode(false)
-      if (mouseInteractionTimeoutRef.current) {
-        clearTimeout(mouseInteractionTimeoutRef.current)
-      }
-      mouseInteractionTimeoutRef.current = setTimeout(() => {
-        setSelectedElementIndex(-1)
-      }, 100)
-    }
-  }, [keyboardMode])
-
-  // Handle wheel/trackpad zoom
-  const handleWheel = useCallback(
-    (e: WheelEvent) => {
-      e.preventDefault()
-
-      const { x, y } = getCanvasCoordinates(e as any)
-      const result = findElementAt(x, y)
-
-      if (result) {
-        const { element, index } = result
-        const scaleFactor = e.deltaY > 0 ? 0.9 : 1.1
-
-        if (element.type === "circle") {
-          const newRadius = Math.max(minRadius, Math.min(maxRadius, element.radius * scaleFactor))
-          setLastUsedRadius(newRadius)
-
-          setElements((prev) =>
-            prev.map((el, idx) =>
-              idx === index
-                ? {
-                    ...el,
-                    radius: newRadius,
-                    mass: newRadius / 10,
-                  }
-                : el,
-            ),
-          )
-        } else if (element.type === "text") {
-          const newFontSize = Math.max(16, Math.min(72, (element.fontSize || fontSize) * scaleFactor))
-          const newRadius = Math.max(newFontSize / 2, 20)
-
-          setElements((prev) =>
-            prev.map((el, idx) =>
-              idx === index
-                ? {
-                    ...el,
-                    fontSize: newFontSize,
-                    radius: newRadius,
-                    mass: newRadius / 10,
-                  }
-                : el,
-            ),
-          )
-        }
-
-        // Make the element moveable when scaling
-        setMoveableElementIndex(index)
-        setSelectedElementIndex(-1)
-        setPhysicsActive(false)
-      }
-    },
-    [findElementAt, minRadius, maxRadius, fontSize, lastUsedRadius],
-  )
-
-  // Physics simulation
-  const updatePhysics = useCallback(() => {
-    const canvas = canvasRef.current
-    if (!canvas || !physicsActive) return
-
-    setElements((prevElements) => {
-      const newElements = [...prevElements]
-      let hasMovement = false
-
-      // Apply gravity and update positions
-      for (let i = 0; i < newElements.length; i++) {
-        const element = newElements[i]
-
-        // Skip physics for moveable elements
-        if (element.state === "moveable") continue
-
-        // Apply gravity based on direction
-        switch (gravityDirection) {
-          case "down":
-            element.vy += gravity
-            break
-          case "up":
-            element.vy -= gravity
-            break
-          case "left":
-            element.vx -= gravity
-            break
-          case "right":
-            element.vx += gravity
-            break
-        }
-
-        // Apply friction
-        element.vx *= friction
-        element.vy *= friction
-
-        // Update position
-        element.x += element.vx
-        element.y += element.vy
-
-        const rect = canvas.getBoundingClientRect()
-        const logicalWidth = rect.width
-        const logicalHeight = rect.height
-
-        // Check boundaries based on gravity direction
-        if (gravityDirection === "down" && element.y + element.radius > logicalHeight) {
-          if (isClearing) {
-            continue
-          } else {
-            element.y = logicalHeight - element.radius
-            element.vy *= -bounciness
-            if (Math.abs(element.vy) < 0.5) element.vy = 0
-          }
-        } else if (gravityDirection === "up" && element.y - element.radius < 0) {
-          if (isClearing) {
-            continue
-          } else {
-            element.y = element.radius
-            element.vy *= -bounciness
-            if (Math.abs(element.vy) < 0.5) element.vy = 0
-          }
-        } else if (gravityDirection === "left" && element.x - element.radius < 0) {
-          if (isClearing) {
-            continue
-          } else {
-            element.x = element.radius
-            element.vx *= -bounciness
-            if (Math.abs(element.vx) < 0.5) element.vx = 0
-          }
-        } else if (gravityDirection === "right" && element.x + element.radius > logicalWidth) {
-          if (isClearing) {
-            continue
-          } else {
-            element.x = logicalWidth - element.radius
-            element.vx *= -bounciness
-            if (Math.abs(element.vx) < 0.5) element.vx = 0
-          }
-        }
-
-        // Handle perpendicular boundaries
-        if (gravityDirection === "down" || gravityDirection === "up") {
-          if (element.x - element.radius < 0) {
-            element.x = element.radius
-            element.vx *= -bounciness
-          }
-          if (element.x + element.radius > logicalWidth) {
-            element.x = logicalWidth - element.radius
-            element.vx *= -bounciness
-          }
-        } else {
-          if (element.y - element.radius < 0) {
-            element.y = element.radius
-            element.vy *= -bounciness
-          }
-          if (element.y + element.radius > logicalHeight) {
-            element.y = logicalHeight - element.radius
-            element.vy *= -bounciness
-          }
-        }
-
-        if (Math.abs(element.vx) > 0.1 || Math.abs(element.vy) > 0.1) {
-          hasMovement = true
-        }
-      }
-
-      // Element-to-element collisions
-      for (let i = 0; i < newElements.length; i++) {
-        for (let j = i + 1; j < newElements.length; j++) {
-          const element1 = newElements[i]
-          const element2 = newElements[j]
-
-          // Skip collisions if either element is moveable
-          if (element1.state === "moveable" || element2.state === "moveable") continue
-
-          const dx = element2.x - element1.x
-          const dy = element2.y - element1.y
-          const dist = Math.sqrt(dx * dx + dy * dy)
-          const minDist = element1.radius + element2.radius
-
-          if (dist < minDist) {
-            hasMovement = true
-
-            const nx = dx / dist
-            const ny = dy / dist
-
-            const overlap = minDist - dist
-            const separationX = (overlap * nx) / 2
-            const separationY = (overlap * ny) / 2
-
-            element1.x -= separationX
-            element1.y -= separationY
-            element2.x += separationX
-            element2.y += separationY
-
-            const dvx = element2.vx - element1.vx
-            const dvy = element2.vy - element1.vy
-            const dvn = dvx * nx + dvy * ny
-
-            if (dvn > 0) continue
-
-            const impulse = (2 * dvn) / (element1.mass + element2.mass)
-
-            element1.vx += impulse * element2.mass * nx * bounciness
-            element1.vy += impulse * element2.mass * ny * bounciness
-            element2.vx -= impulse * element1.mass * nx * bounciness
-            element2.vy -= impulse * element1.mass * ny * bounciness
-          }
-        }
-      }
-
-      // Stop physics if no movement
-      if (!hasMovement) {
-        setTimeout(() => setPhysicsActive(false), 100)
-      }
-
-      return newElements
-    })
-  }, [physicsActive, gravity, friction, bounciness, isClearing, gravityDirection])
-
-  // Physics animation loop
-  useEffect(() => {
-    if (physicsActive) {
-      const animate = () => {
-        updatePhysics()
-        animationFrameRef.current = requestAnimationFrame(animate)
-      }
-      animationFrameRef.current = requestAnimationFrame(animate)
-    } else {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current)
-      }
-    }
-
-    return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current)
-      }
-    }
-  }, [physicsActive, updatePhysics])
-
-  // Check if clearing is complete
-  useEffect(() => {
-    if (isClearing && elements.length > 0) {
-      const canvas = canvasRef.current
-      if (!canvas) return
-
-      const rect = canvas.getBoundingClientRect()
-      const logicalHeight = rect.height
-      const allElementsFallen = elements.every((element) => element.y - element.radius > logicalHeight)
-
-      if (allElementsFallen) {
-        // All elements have fallen off screen
-        setElements([])
-        setIsClearing(false)
-        setSelectedElementIndex(-1)
-        setMoveableElementIndex(-1)
-        setHoverElementId(null)
-
-        // Restore physics state
-        if (!wasPhysicsActiveBeforeClearing) {
-          setPhysicsActive(false)
-        }
-      }
-    }
-  }, [elements, isClearing, wasPhysicsActiveBeforeClearing])
-
-  // Split text elements into individual characters for physics
-  const splitWordsIntoCharacters = useCallback(() => {
-    setElements((prev) => {
-      const newElements: Element[] = []
-
-      prev.forEach((element) => {
-        if (element.type === "text" && element.text && element.text.length > 1) {
-          // Split multi-character text into individual characters
-          const chars = element.text.split("")
-          const charSpacing = (element.fontSize || fontSize) * 0.6
-          const startX = element.x - ((chars.length - 1) * charSpacing) / 2
-
-          chars.forEach((char, index) => {
-            const charElement: Element = {
-              ...element,
-              id: generateId(),
-              x: startX + index * charSpacing,
-              text: char,
-              vx: (Math.random() - 0.5) * 2,
-              vy: Math.random() * -2,
-              mass: (element.fontSize || fontSize) / 20,
-            }
-            newElements.push(charElement)
-          })
-        } else {
-          // Keep circles and single characters as-is, but add physics properties
-          newElements.push({
-            ...element,
-            vx: (Math.random() - 0.5) * 2,
-            vy: Math.random() * -2,
-            mass: element.radius / 10,
-          })
-        }
-      })
-
-      return newElements
-    })
-  }, [fontSize])
-
-  // Handle keyboard events
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      const canvas = canvasRef.current
-      if (!canvas) return
-
-      setKeyboardMode(true)
-      if (mouseInteractionTimeoutRef.current) {
-        clearTimeout(mouseInteractionTimeoutRef.current)
-      }
-
-      const moveableElementIndexLocal = moveableElementIndex
-      const moveableElement = moveableElementIndexLocal >= 0 ? elements[moveableElementIndexLocal] : null
-
-      const rect = canvas.getBoundingClientRect()
-      const logicalWidth = rect.width
-      const logicalHeight = rect.height
-
-      switch (e.key) {
-        case "ArrowUp":
-          e.preventDefault()
-          if (physicsActive) {
-            setGravityDirection("up")
-          } else if (moveableElement) {
-            setElements((prev) =>
-              prev.map((element, index) =>
-                index === moveableElementIndexLocal
-                  ? {
-                      ...element,
-                      y: Math.max(element.radius, element.y - movementSpeed),
-                    }
-                  : element,
-              ),
-            )
-          } else {
-            if (elements.length > 0) {
-              const nearestIndex = findNearestElementInDirection("up")
-              if (nearestIndex >= 0) {
-                setSelectedElementIndex(nearestIndex)
-              } else if (selectedElementIndex < 0) {
-                setSelectedElementIndex(0)
-              }
-            }
-          }
-          break
-
-        case "ArrowDown":
-          e.preventDefault()
-          if (physicsActive) {
-            setGravityDirection("down")
-          } else if (moveableElement) {
-            setElements((prev) =>
-              prev.map((element, index) =>
-                index === moveableElementIndexLocal
-                  ? {
-                      ...element,
-                      y: Math.min(logicalHeight - element.radius, element.y + movementSpeed),
-                    }
-                  : element,
-              ),
-            )
-          } else {
-            if (elements.length > 0) {
-              const nearestIndex = findNearestElementInDirection("down")
-              if (nearestIndex >= 0) {
-                setSelectedElementIndex(nearestIndex)
-              } else if (selectedElementIndex < 0) {
-                setSelectedElementIndex(0)
-              }
-            }
-          }
-          break
-
-        case "ArrowLeft":
-          e.preventDefault()
-          if (physicsActive) {
-            setGravityDirection("left")
-          } else if (moveableElement) {
-            setElements((prev) =>
-              prev.map((element, index) =>
-                index === moveableElementIndexLocal
-                  ? {
-                      ...element,
-                      x: Math.max(element.radius, element.x - movementSpeed),
-                    }
-                  : element,
-              ),
-            )
-          } else {
-            if (elements.length > 0) {
-              const nearestIndex = findNearestElementInDirection("left")
-              if (nearestIndex >= 0) {
-                setSelectedElementIndex(nearestIndex)
-              } else if (selectedElementIndex < 0) {
-                setSelectedElementIndex(0)
-              }
-            }
-          }
-          break
-
-        case "ArrowRight":
-          e.preventDefault()
-          if (physicsActive) {
-            setGravityDirection("right")
-          } else if (moveableElement) {
-            setElements((prev) =>
-              prev.map((element, index) =>
-                index === moveableElementIndexLocal
-                  ? {
-                      ...element,
-                      x: Math.min(logicalWidth - element.radius, element.x + movementSpeed),
-                    }
-                  : element,
-              ),
-            )
-          } else {
-            if (elements.length > 0) {
-              const nearestIndex = findNearestElementInDirection("right")
-              if (nearestIndex >= 0) {
-                setSelectedElementIndex(nearestIndex)
-              } else if (selectedElementIndex < 0) {
-                setSelectedElementIndex(0)
-              }
-            }
-          }
-          break
-
-        case " ": // Space key - toggle moveable state
-          e.preventDefault()
-          if (moveableElementIndexLocal >= 0) {
-            // Stop moving
-            setMoveableElementIndex(-1)
-          } else if (selectedElementIndex >= 0) {
-            // Start moving
-            setMoveableElementIndex(selectedElementIndex)
-            setSelectedElementIndex(-1)
-          }
-          break
-
-        case "Enter":
-        case "Return": // Enter key - toggle gravity
-          e.preventDefault()
-          if (elements.length > 0) {
-            if (physicsActive) {
-              setPhysicsActive(false)
-            } else {
-              // Split words into characters and start gravity
-              splitWordsIntoCharacters()
-              setPhysicsActive(true)
-            }
-          }
-          break
-
-        case "1":
-        case "2":
-        case "3":
-        case "4":
-        case "5":
-        case "6":
-        case "7":
-        case "8":
-        case "9":
-        case "0":
-          e.preventDefault()
-          const numberValue = e.key === "0" ? 10 : Number.parseInt(e.key)
-          const newRadius = Math.max(
-            minRadius,
-            Math.min(maxRadius, minRadius + (numberValue - 1) * ((maxRadius - minRadius) / 9)),
-          )
-
-          // Check if we have a selected or moveable element to resize
-          const targetElement = moveableElement || getSelectedElement()
-          if (targetElement) {
-            // Resize existing element
-            setLastUsedRadius(newRadius)
-            const targetIndex = moveableElementIndexLocal >= 0 ? moveableElementIndexLocal : selectedElementIndex
-
-            setElements((prev) =>
-              prev.map((element, index) => {
-                if (index === targetIndex) {
-                  if (element.type === "circle") {
-                    return {
-                      ...element,
-                      radius: newRadius,
-                      mass: newRadius / 10,
-                    }
-                  } else if (element.type === "text") {
-                    const newFontSize = Math.max(16, Math.min(72, 16 + (numberValue - 1) * 6))
-                    const textRadius = Math.max(newFontSize / 2, 20)
-                    return {
-                      ...element,
-                      fontSize: newFontSize,
-                      radius: textRadius,
-                      mass: textRadius / 10,
-                    }
-                  }
+            if (candidates.length === 0) return -1
+
+            candidates.sort((a, b) => {
+                const alignmentDiff = a.alignmentScore - b.alignmentScore
+                if (Math.abs(alignmentDiff) > 20) {
+                    return alignmentDiff
                 }
-                return element
-              }),
-            )
-          } else {
-            // Create new circle with balanced placement - set to default state
-            setLastUsedRadius(newRadius)
-            const emptyArea = findMostEmptyArea(newRadius)
-            const newElementId = generateId()
-            const newElement: Element = {
-              id: newElementId,
-              x: emptyArea.x,
-              y: emptyArea.y,
-              radius: newRadius,
-              color: circleColor,
-              type: "circle",
-              state: "default", // Changed from "moveable" to "default"
-              vx: 0,
-              vy: 0,
-              mass: newRadius / 10,
-            }
-            setElements((prev) => [...prev, newElement])
-            // Don't set as moveable anymore
-            setSelectedElementIndex(-1)
-            setMoveableElementIndex(-1)
-          }
-          break
+                return a.distance - b.distance
+            })
 
-        case "Escape":
-          e.preventDefault()
-          if (elements.length > 0) {
-            // Start clearing process
-            setIsClearing(true)
-            setWasPhysicsActiveBeforeClearing(physicsActive)
-
-            if (!physicsActive) {
-              // Turn on physics if it wasn't already on
-              setElements((prev) =>
-                prev.map((element) => ({
-                  ...element,
-                  vx: (Math.random() - 0.5) * 2,
-                  vy: Math.random() * -2,
-                  mass: element.radius / 10,
-                })),
-              )
-              setPhysicsActive(true)
-            }
-
-            // Clear any selected/moveable states
-            setSelectedElementIndex(-1)
-            setMoveableElementIndex(-1)
-          }
-          break
-
-        case "Backspace":
-          e.preventDefault()
-          // Check if we have a moveable text element to remove characters from
-          const moveableElementLocal = moveableElement
-          if (moveableElementLocal && moveableElementLocal.type === "text" && moveableElementLocal.text) {
-            if (moveableElementLocal.text.length > 1) {
-              // Remove last character
-              setElements((prev) =>
-                prev.map((element, index) =>
-                  index === moveableElementIndexLocal
-                    ? {
-                        ...element,
-                        text: element.text!.slice(0, -1),
-                      }
-                    : element,
-                ),
-              )
-            } else {
-              // If only one character left, remove the entire element
-              setElements((prev) => prev.filter((_, index) => index !== moveableElementIndexLocal))
-              setMoveableElementIndex(-1)
-              setSelectedElementIndex(-1)
-            }
-          }
-          break
-
-        default:
-          // Handle letter keys
-          if (e.key.length === 1 && e.key.match(/[a-zA-Z]/)) {
-            e.preventDefault()
-            const letter = e.key.toLowerCase()
-
-            // Check if we have a moveable text element to append to
-            const moveableElementLocal = moveableElement
-            if (moveableElementLocal && moveableElementLocal.type === "text") {
-              // Append to existing text element
-              setElements((prev) =>
-                prev.map((element, index) =>
-                  index === moveableElementIndexLocal
-                    ? {
-                        ...element,
-                        text: (element.text || "") + letter,
-                      }
-                    : element,
-                ),
-              )
-            } else {
-              // Create new text element with balanced placement - set to moveable for text editing
-              const textRadius = Math.max(fontSize / 2, 20)
-              const emptyArea = findMostEmptyArea(textRadius)
-              const newElementId = generateId()
-
-              const newElement: Element = {
-                id: newElementId,
-                x: emptyArea.x,
-                y: emptyArea.y,
-                radius: textRadius,
-                color: textColor,
-                type: "text",
-                text: letter,
-                fontSize: fontSize,
-                state: "moveable", // Keep moveable for text editing
-                vx: 0,
-                vy: 0,
-                mass: textRadius / 10,
-              }
-              setElements((prev) => [...prev, newElement])
-              setMoveableElementIndex(elements.length)
-              setSelectedElementIndex(-1)
-            }
-          }
-          break
-      }
-    },
-    [
-      elements,
-      selectedElementIndex,
-      moveableElementIndex,
-      movementSpeed,
-      initialRadius,
-      circleColor,
-      textColor,
-      minRadius,
-      maxRadius,
-      physicsActive,
-      getSelectedElement,
-      findNearestElementInDirection,
-      findMostEmptyArea,
-      lastUsedRadius,
-      fontSize,
-      splitWordsIntoCharacters,
-    ],
-  )
-
-  // Update element states
-  useEffect(() => {
-    setElements((prev) =>
-      prev.map((element, index) => {
-        let state: Element["state"] = "default"
-
-        if (index === moveableElementIndex) {
-          state = "moveable"
-        } else if (index === selectedElementIndex && keyboardMode) {
-          state = "selected"
-        } else if (element.id === hoverElementId && !keyboardMode) {
-          state = "selected"
-        }
-
-        return { ...element, state }
-      }),
+            return candidates[0].index
+        },
+        [elements, getSelectedElement]
     )
-  }, [selectedElementIndex, moveableElementIndex, hoverElementId, keyboardMode])
 
-  // Modify the draw useCallback hook (around line 1100):
-  // Replace the section for drawing overlaps and update text rendering.
-  const draw = useCallback(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-
-    const ctx = canvas.getContext("2d")
-    if (!ctx) return
-
-    const rect = canvas.getBoundingClientRect()
-    const logicalWidth = rect.width
-    const logicalHeight = rect.height
-
-    ctx.fillStyle = physicsActive ? physicsBackgroundColor : backgroundColor
-    ctx.fillRect(0, 0, logicalWidth, logicalHeight)
-
-    // Draw circles first (base colors and strokes)
-    elements.forEach((element) => {
-      if (element.type === "circle") {
-        ctx.beginPath()
-        ctx.arc(element.x, element.y, element.radius, 0, 2 * Math.PI)
-        ctx.fillStyle = element.color
-        ctx.fill()
-
-        let strokeColorToUse = strokeColor
-        let lineWidth = strokeWidth
-        switch (element.state) {
-          case "selected":
-            strokeColorToUse = selectedColor
-            lineWidth = selectedStrokeWidth
-            break
-          case "moveable":
-            strokeColorToUse = moveableColor
-            lineWidth = moveableStrokeWidth
-            break
-          default:
-            strokeColorToUse = strokeColor
-            lineWidth = strokeWidth
-        }
-        ctx.strokeStyle = strokeColorToUse
-        ctx.lineWidth = lineWidth
-        ctx.stroke()
-
-        if (element.state === "selected") {
-          ctx.beginPath()
-          ctx.arc(element.x, element.y, element.radius + 5, 0, 2 * Math.PI)
-          ctx.strokeStyle = selectedColor
-          ctx.lineWidth = 1
-          ctx.setLineDash([5, 5])
-          ctx.stroke()
-          ctx.setLineDash([])
-        }
-        if (element.state === "moveable") {
-          ctx.beginPath()
-          ctx.arc(element.x, element.y, element.radius + 8, 0, 2 * Math.PI)
-          ctx.strokeStyle = moveableColor
-          ctx.lineWidth = 2
-          ctx.setLineDash([3, 3])
-          ctx.stroke()
-          ctx.setLineDash([])
-        }
-      }
-    })
-
-    // Draw overlapping areas for circles using layered clipping
-    const circleElements = elements.filter((el) => el.type === "circle")
-
-    // Draw 2-element overlaps
-    if (circleElements.length >= 2) {
-      for (let i = 0; i < circleElements.length; i++) {
-        for (let j = i + 1; j < circleElements.length; j++) {
-          const c1 = circleElements[i]
-          const c2 = circleElements[j]
-          if (!circlesOverlap(c1, c2)) continue
-
-          ctx.save()
-          ctx.beginPath()
-          ctx.arc(c1.x, c1.y, c1.radius, 0, 2 * Math.PI)
-          ctx.clip()
-          ctx.beginPath()
-          ctx.arc(c2.x, c2.y, c2.radius, 0, 2 * Math.PI) // Path for c2
-          // Fill c2's path, restricted by c1's clip
-          ctx.fillStyle = getOverlapColor(1) // 2 elements total -> overlapCount = 1
-          ctx.fill()
-          ctx.restore()
-        }
-      }
-    }
-
-    // Draw 3-element overlaps
-    if (circleElements.length >= 3) {
-      for (let i = 0; i < circleElements.length; i++) {
-        for (let j = i + 1; j < circleElements.length; j++) {
-          for (let k = j + 1; k < circleElements.length; k++) {
-            const c1 = circleElements[i]
-            const c2 = circleElements[j]
-            const c3 = circleElements[k]
-
-            // Basic check, can be improved for actual 3-way intersection
-            if (!circlesOverlap(c1, c2) || !circlesOverlap(c1, c3) || !circlesOverlap(c2, c3)) continue
-
-            ctx.save()
-            ctx.beginPath()
-            ctx.arc(c1.x, c1.y, c1.radius, 0, 2 * Math.PI)
-            ctx.clip()
-            ctx.beginPath()
-            ctx.arc(c2.x, c2.y, c2.radius, 0, 2 * Math.PI)
-            ctx.clip()
-            ctx.beginPath()
-            ctx.arc(c3.x, c3.y, c3.radius, 0, 2 * Math.PI) // Path for c3
-            // Fill c3's path, restricted by c1 ∩ c2 clip
-            ctx.fillStyle = getOverlapColor(2) // 3 elements total -> overlapCount = 2
-            ctx.fill()
-            ctx.restore()
-          }
-        }
-      }
-    }
-
-    // Draw 4-element (and more) overlaps
-    if (circleElements.length >= 4) {
-      for (let i = 0; i < circleElements.length; i++) {
-        for (let j = i + 1; j < circleElements.length; j++) {
-          for (let k = j + 1; k < circleElements.length; k++) {
-            for (let l = k + 1; l < circleElements.length; l++) {
-              const c1 = circleElements[i]
-              const c2 = circleElements[j]
-              const c3 = circleElements[k]
-              const c4 = circleElements[l]
-
-              if (
-                !circlesOverlap(c1, c2) ||
-                !circlesOverlap(c1, c3) ||
-                !circlesOverlap(c1, c4) ||
-                !circlesOverlap(c2, c3) ||
-                !circlesOverlap(c2, c4) ||
-                !circlesOverlap(c3, c4)
-              )
-                continue
-
-              ctx.save()
-              ctx.beginPath()
-              ctx.arc(c1.x, c1.y, c1.radius, 0, 2 * Math.PI)
-              ctx.clip()
-              ctx.beginPath()
-              ctx.arc(c2.x, c2.y, c2.radius, 0, 2 * Math.PI)
-              ctx.clip()
-              ctx.beginPath()
-              ctx.arc(c3.x, c3.y, c3.radius, 0, 2 * Math.PI)
-              ctx.clip()
-              ctx.beginPath()
-              ctx.arc(c4.x, c4.y, c4.radius, 0, 2 * Math.PI) // Path for c4
-              // Fill c4's path, restricted by c1 ∩ c2 ∩ c3 clip
-              ctx.fillStyle = getOverlapColor(3) // 4+ elements total -> overlapCount = 3
-              ctx.fill()
-              ctx.restore()
+    // Clear selection when switching to mouse mode
+    const handleMouseInteraction = useCallback(() => {
+        if (keyboardMode) {
+            setKeyboardMode(false)
+            if (mouseInteractionTimeoutRef.current) {
+                clearTimeout(mouseInteractionTimeoutRef.current)
             }
-          }
+            mouseInteractionTimeoutRef.current = setTimeout(() => {
+                setSelectedElementIndex(-1)
+            }, 100)
         }
-      }
-    }
+    }, [keyboardMode])
 
-    // Draw text elements with character-level overlap detection
-    elements.forEach((element) => {
-      if (element.type === "text" && element.text) {
-        ctx.font = `${element.fontSize || fontSize}px Arial`
-        ctx.textAlign = "center"
-        ctx.textBaseline = "middle"
+    // Handle wheel/trackpad zoom
+    const handleWheel = useCallback(
+        (e: WheelEvent) => {
+            e.preventDefault()
 
-        if (element.text.length > 1) {
-          const chars = element.text.split("")
-          const charSpacing = (element.fontSize || fontSize) * 0.6
-          const startX = element.x - ((chars.length - 1) * charSpacing) / 2
+            const { x, y } = getCanvasCoordinates(e as any)
+            const result = findElementAt(x, y)
 
-          chars.forEach((char, index) => {
-            const charX = startX + index * charSpacing
-            const charY = element.y
-            const charWidth = ctx.measureText(char).width
-            const charHeight = element.fontSize || fontSize
+            if (result) {
+                const { element, index } = result
+                const scaleFactor = e.deltaY > 0 ? 0.9 : 1.1
 
-            const overlapDegree = countCharacterOverlaps(
-              // Use new function
-              charX,
-              charY,
-              charWidth,
-              charHeight,
-              elements,
-              element.id,
+                if (element.type === "circle") {
+                    const newRadius = Math.max(
+                        minRadius,
+                        Math.min(maxRadius, element.radius * scaleFactor)
+                    )
+                    setLastUsedRadius(newRadius)
+
+                    setElements((prev) =>
+                        prev.map((el, idx) =>
+                            idx === index
+                                ? {
+                                      ...el,
+                                      radius: newRadius,
+                                      mass: newRadius / 10,
+                                  }
+                                : el
+                        )
+                    )
+                } else if (element.type === "text") {
+                    const newFontSize = Math.max(
+                        16,
+                        Math.min(
+                            72,
+                            (element.fontSize || fontSize) * scaleFactor
+                        )
+                    )
+                    const newRadius = Math.max(newFontSize / 2, 20)
+
+                    setElements((prev) =>
+                        prev.map((el, idx) =>
+                            idx === index
+                                ? {
+                                      ...el,
+                                      fontSize: newFontSize,
+                                      radius: newRadius,
+                                      mass: newRadius / 10,
+                                  }
+                                : el
+                        )
+                    )
+                }
+
+                // Make the element moveable when scaling
+                setMoveableElementIndex(index)
+                setSelectedElementIndex(-1)
+                setPhysicsActive(false)
+            }
+        },
+        [findElementAt, minRadius, maxRadius, fontSize, lastUsedRadius]
+    )
+
+    // Physics simulation
+    const updatePhysics = useCallback(() => {
+        const canvas = canvasRef.current
+        if (!canvas || !physicsActive) return
+
+        setElements((prevElements) => {
+            const newElements = [...prevElements]
+            let hasMovement = false
+
+            // Apply gravity and update positions
+            for (let i = 0; i < newElements.length; i++) {
+                const element = newElements[i]
+
+                // Skip physics for moveable elements
+                if (element.state === "moveable") continue
+
+                // Apply gravity based on direction
+                switch (gravityDirection) {
+                    case "down":
+                        element.vy += gravity
+                        break
+                    case "up":
+                        element.vy -= gravity
+                        break
+                    case "left":
+                        element.vx -= gravity
+                        break
+                    case "right":
+                        element.vx += gravity
+                        break
+                }
+
+                // Apply friction
+                element.vx *= friction
+                element.vy *= friction
+
+                // Update position
+                element.x += element.vx
+                element.y += element.vy
+
+                const rect = canvas.getBoundingClientRect()
+                const logicalWidth = rect.width
+                const logicalHeight = rect.height
+
+                // Check boundaries based on gravity direction
+                if (
+                    gravityDirection === "down" &&
+                    element.y + element.radius > logicalHeight
+                ) {
+                    if (isClearing) {
+                        continue
+                    } else {
+                        element.y = logicalHeight - element.radius
+                        element.vy *= -bounciness
+                        if (Math.abs(element.vy) < 0.5) element.vy = 0
+                    }
+                } else if (
+                    gravityDirection === "up" &&
+                    element.y - element.radius < 0
+                ) {
+                    if (isClearing) {
+                        continue
+                    } else {
+                        element.y = element.radius
+                        element.vy *= -bounciness
+                        if (Math.abs(element.vy) < 0.5) element.vy = 0
+                    }
+                } else if (
+                    gravityDirection === "left" &&
+                    element.x - element.radius < 0
+                ) {
+                    if (isClearing) {
+                        continue
+                    } else {
+                        element.x = element.radius
+                        element.vx *= -bounciness
+                        if (Math.abs(element.vx) < 0.5) element.vx = 0
+                    }
+                } else if (
+                    gravityDirection === "right" &&
+                    element.x + element.radius > logicalWidth
+                ) {
+                    if (isClearing) {
+                        continue
+                    } else {
+                        element.x = logicalWidth - element.radius
+                        element.vx *= -bounciness
+                        if (Math.abs(element.vx) < 0.5) element.vx = 0
+                    }
+                }
+
+                // Handle perpendicular boundaries
+                if (gravityDirection === "down" || gravityDirection === "up") {
+                    if (element.x - element.radius < 0) {
+                        element.x = element.radius
+                        element.vx *= -bounciness
+                    }
+                    if (element.x + element.radius > logicalWidth) {
+                        element.x = logicalWidth - element.radius
+                        element.vx *= -bounciness
+                    }
+                } else {
+                    if (element.y - element.radius < 0) {
+                        element.y = element.radius
+                        element.vy *= -bounciness
+                    }
+                    if (element.y + element.radius > logicalHeight) {
+                        element.y = logicalHeight - element.radius
+                        element.vy *= -bounciness
+                    }
+                }
+
+                if (Math.abs(element.vx) > 0.1 || Math.abs(element.vy) > 0.1) {
+                    hasMovement = true
+                }
+            }
+
+            // Element-to-element collisions
+            for (let i = 0; i < newElements.length; i++) {
+                for (let j = i + 1; j < newElements.length; j++) {
+                    const element1 = newElements[i]
+                    const element2 = newElements[j]
+
+                    // Skip collisions if either element is moveable
+                    if (
+                        element1.state === "moveable" ||
+                        element2.state === "moveable"
+                    )
+                        continue
+
+                    const dx = element2.x - element1.x
+                    const dy = element2.y - element1.y
+                    const dist = Math.sqrt(dx * dx + dy * dy)
+                    const minDist = element1.radius + element2.radius
+
+                    if (dist < minDist) {
+                        hasMovement = true
+
+                        const nx = dx / dist
+                        const ny = dy / dist
+
+                        const overlap = minDist - dist
+                        const separationX = (overlap * nx) / 2
+                        const separationY = (overlap * ny) / 2
+
+                        element1.x -= separationX
+                        element1.y -= separationY
+                        element2.x += separationX
+                        element2.y += separationY
+
+                        const dvx = element2.vx - element1.vx
+                        const dvy = element2.vy - element1.vy
+                        const dvn = dvx * nx + dvy * ny
+
+                        if (dvn > 0) continue
+
+                        const impulse =
+                            (2 * dvn) / (element1.mass + element2.mass)
+
+                        element1.vx += impulse * element2.mass * nx * bounciness
+                        element1.vy += impulse * element2.mass * ny * bounciness
+                        element2.vx -= impulse * element1.mass * nx * bounciness
+                        element2.vy -= impulse * element1.mass * ny * bounciness
+                    }
+                }
+            }
+
+            // Stop physics if no movement
+            if (!hasMovement) {
+                setTimeout(() => setPhysicsActive(false), 100)
+            }
+
+            return newElements
+        })
+    }, [
+        physicsActive,
+        gravity,
+        friction,
+        bounciness,
+        isClearing,
+        gravityDirection,
+    ])
+
+    // Physics animation loop
+    useEffect(() => {
+        if (physicsActive) {
+            const animate = () => {
+                updatePhysics()
+                animationFrameRef.current = requestAnimationFrame(animate)
+            }
+            animationFrameRef.current = requestAnimationFrame(animate)
+        } else {
+            if (animationFrameRef.current) {
+                cancelAnimationFrame(animationFrameRef.current)
+            }
+        }
+
+        return () => {
+            if (animationFrameRef.current) {
+                cancelAnimationFrame(animationFrameRef.current)
+            }
+        }
+    }, [physicsActive, updatePhysics])
+
+    // Check if clearing is complete
+    useEffect(() => {
+        if (isClearing && elements.length > 0) {
+            const canvas = canvasRef.current
+            if (!canvas) return
+
+            const rect = canvas.getBoundingClientRect()
+            const logicalHeight = rect.height
+            const allElementsFallen = elements.every(
+                (element) => element.y - element.radius > logicalHeight
             )
 
-            ctx.fillStyle = overlapDegree > 0 ? getOverlapColor(overlapDegree) : element.color
-            ctx.fillText(char, charX, charY)
-          })
-        } else {
-          const charWidth = ctx.measureText(element.text).width
-          const charHeight = element.fontSize || fontSize
-          const overlapDegree = countCharacterOverlaps(
-            // Use new function
-            element.x,
-            element.y,
-            charWidth,
-            charHeight,
-            elements,
-            element.id,
-          )
+            if (allElementsFallen) {
+                // All elements have fallen off screen
+                setElements([])
+                setIsClearing(false)
+                setSelectedElementIndex(-1)
+                setMoveableElementIndex(-1)
+                setHoverElementId(null)
 
-          ctx.fillStyle = overlapDegree > 0 ? getOverlapColor(overlapDegree) : element.color
-          ctx.fillText(element.text, element.x, element.y)
-        }
-
-        // Stroke and indicators for text (unchanged from original)
-        let strokeColorToUse = strokeColor
-        let lineWidth = strokeWidth
-        switch (element.state) {
-          case "selected":
-            strokeColorToUse = selectedColor
-            lineWidth = selectedStrokeWidth
-            break
-          case "moveable":
-            strokeColorToUse = moveableColor
-            lineWidth = moveableStrokeWidth
-            break
-          default:
-            strokeColorToUse = strokeColor
-            lineWidth = strokeWidth
-        }
-        if (element.state === "selected") {
-          // Only stroke selected text for clarity
-          ctx.strokeStyle = strokeColorToUse
-          ctx.lineWidth = lineWidth
-          ctx.strokeText(element.text, element.x, element.y)
-        }
-
-        if (element.state === "selected") {
-          const dims = getTextDimensions(element.text, element.fontSize || fontSize)
-          ctx.strokeStyle = selectedColor
-          ctx.lineWidth = 1
-          ctx.setLineDash([5, 5])
-          ctx.strokeRect(
-            element.x - dims.width / 2 - 5,
-            element.y - dims.height / 2 - 5,
-            dims.width + 10,
-            dims.height + 10,
-          )
-          ctx.setLineDash([])
-        }
-        if (element.state === "moveable") {
-          const dims = getTextDimensions(element.text, element.fontSize || fontSize)
-          ctx.strokeStyle = moveableColor
-          ctx.lineWidth = 2
-          ctx.setLineDash([3, 3])
-          ctx.strokeRect(
-            element.x - dims.width / 2 - 8,
-            element.y - dims.height / 2 - 8,
-            dims.width + 16,
-            dims.height + 16,
-          )
-          ctx.setLineDash([])
-        }
-      }
-    })
-  }, [
-    elements,
-    backgroundColor,
-    physicsBackgroundColor,
-    strokeColor,
-    strokeWidth,
-    selectedColor,
-    moveableColor,
-    physicsActive,
-    fontSize,
-    getTextDimensions,
-    // drawCircleIntersection, // Removed from dependencies
-    // characterOverlaps, // Replaced by countCharacterOverlaps
-    countCharacterOverlaps, // Added
-    circlesOverlap, // Added, used by new circle overlap logic
-    getOverlapColor, // Added, used by new circle overlap logic
-    overlapColor2, // This was already a dep via characterOverlaps, now directly relevant
-    selectedStrokeWidth,
-    moveableStrokeWidth,
-  ])
-
-  // Handle mouse down
-  const handleMouseDown = useCallback(
-    (e: MouseEvent) => {
-      e.preventDefault()
-      handleMouseInteraction()
-
-      const { x, y } = getCanvasCoordinates(e)
-      const result = findElementAt(x, y)
-
-      if (result) {
-        const { element, index } = result
-        // Make clicked element moveable
-        setMoveableElementIndex(index)
-        setSelectedElementIndex(-1)
-        setPhysicsActive(false) // Stop physics when dragging
-
-        setDragOffset({
-          x: x - element.x,
-          y: y - element.y,
-        })
-      } else {
-        // Clear any moveable element when clicking outside
-        setMoveableElementIndex(-1)
-        setSelectedElementIndex(-1)
-
-        // Start creating new circle
-        const newElementId = generateId()
-        const newElement: Element = {
-          id: newElementId,
-          x,
-          y,
-          radius: 5,
-          color: circleColor,
-          type: "circle",
-          state: "default",
-          vx: 0,
-          vy: 0,
-          mass: 1,
-        }
-        setElements((prev) => [...prev, newElement])
-        setIsCreatingElement(true)
-        setCreationStart({ x, y })
-        creatingElementId.current = newElementId
-      }
-    },
-    [findElementAt, handleMouseInteraction, circleColor],
-  )
-
-  // Handle mouse move
-  const handleMouseMove = useCallback(
-    (e: MouseEvent) => {
-      const { x, y } = getCanvasCoordinates(e)
-
-      if (isCreatingElement && creationStart && creatingElementId.current) {
-        // Update radius of circle being created
-        const dragDistance = distance(creationStart.x, creationStart.y, x, y)
-        const newRadius = Math.max(minRadius, Math.min(maxRadius, dragDistance))
-
-        setElements((prev) =>
-          prev.map((element) =>
-            element.id === creatingElementId.current
-              ? {
-                  ...element,
-                  radius: newRadius,
-                  mass: newRadius / 10,
+                // Restore physics state
+                if (!wasPhysicsActiveBeforeClearing) {
+                    setPhysicsActive(false)
                 }
-              : element,
-          ),
+            }
+        }
+    }, [elements, isClearing, wasPhysicsActiveBeforeClearing])
+
+    // Split text elements into individual characters for physics
+    const splitWordsIntoCharacters = useCallback(() => {
+        setElements((prev) => {
+            const newElements: Element[] = []
+
+            prev.forEach((element) => {
+                if (
+                    element.type === "text" &&
+                    element.text &&
+                    element.text.length > 1
+                ) {
+                    // Split multi-character text into individual characters
+                    const chars = element.text.split("")
+                    const charSpacing = (element.fontSize || fontSize) * 0.6
+                    const startX =
+                        element.x - ((chars.length - 1) * charSpacing) / 2
+
+                    chars.forEach((char, index) => {
+                        const charElement: Element = {
+                            ...element,
+                            id: generateId(),
+                            x: startX + index * charSpacing,
+                            text: char,
+                            vx: (Math.random() - 0.5) * 2,
+                            vy: Math.random() * -2,
+                            mass: (element.fontSize || fontSize) / 20,
+                        }
+                        newElements.push(charElement)
+                    })
+                } else {
+                    // Keep circles and single characters as-is, but add physics properties
+                    newElements.push({
+                        ...element,
+                        vx: (Math.random() - 0.5) * 2,
+                        vy: Math.random() * -2,
+                        mass: element.radius / 10,
+                    })
+                }
+            })
+
+            return newElements
+        })
+    }, [fontSize])
+
+    // Handle keyboard events
+    const handleKeyDown = useCallback(
+        (e: KeyboardEvent) => {
+            const canvas = canvasRef.current
+            if (!canvas) return
+
+            setKeyboardMode(true)
+            if (mouseInteractionTimeoutRef.current) {
+                clearTimeout(mouseInteractionTimeoutRef.current)
+            }
+
+            const moveableElementIndexLocal = moveableElementIndex
+            const moveableElement =
+                moveableElementIndexLocal >= 0
+                    ? elements[moveableElementIndexLocal]
+                    : null
+
+            const rect = canvas.getBoundingClientRect()
+            const logicalWidth = rect.width
+            const logicalHeight = rect.height
+
+            switch (e.key) {
+                case "ArrowUp":
+                    e.preventDefault()
+                    if (physicsActive) {
+                        setGravityDirection("up")
+                    } else if (moveableElement) {
+                        setElements((prev) =>
+                            prev.map((element, index) =>
+                                index === moveableElementIndexLocal
+                                    ? {
+                                          ...element,
+                                          y: Math.max(
+                                              element.radius,
+                                              element.y - movementSpeed
+                                          ),
+                                      }
+                                    : element
+                            )
+                        )
+                    } else {
+                        if (elements.length > 0) {
+                            const nearestIndex =
+                                findNearestElementInDirection("up")
+                            if (nearestIndex >= 0) {
+                                setSelectedElementIndex(nearestIndex)
+                            } else if (selectedElementIndex < 0) {
+                                setSelectedElementIndex(0)
+                            }
+                        }
+                    }
+                    break
+
+                case "ArrowDown":
+                    e.preventDefault()
+                    if (physicsActive) {
+                        setGravityDirection("down")
+                    } else if (moveableElement) {
+                        setElements((prev) =>
+                            prev.map((element, index) =>
+                                index === moveableElementIndexLocal
+                                    ? {
+                                          ...element,
+                                          y: Math.min(
+                                              logicalHeight - element.radius,
+                                              element.y + movementSpeed
+                                          ),
+                                      }
+                                    : element
+                            )
+                        )
+                    } else {
+                        if (elements.length > 0) {
+                            const nearestIndex =
+                                findNearestElementInDirection("down")
+                            if (nearestIndex >= 0) {
+                                setSelectedElementIndex(nearestIndex)
+                            } else if (selectedElementIndex < 0) {
+                                setSelectedElementIndex(0)
+                            }
+                        }
+                    }
+                    break
+
+                case "ArrowLeft":
+                    e.preventDefault()
+                    if (physicsActive) {
+                        setGravityDirection("left")
+                    } else if (moveableElement) {
+                        setElements((prev) =>
+                            prev.map((element, index) =>
+                                index === moveableElementIndexLocal
+                                    ? {
+                                          ...element,
+                                          x: Math.max(
+                                              element.radius,
+                                              element.x - movementSpeed
+                                          ),
+                                      }
+                                    : element
+                            )
+                        )
+                    } else {
+                        if (elements.length > 0) {
+                            const nearestIndex =
+                                findNearestElementInDirection("left")
+                            if (nearestIndex >= 0) {
+                                setSelectedElementIndex(nearestIndex)
+                            } else if (selectedElementIndex < 0) {
+                                setSelectedElementIndex(0)
+                            }
+                        }
+                    }
+                    break
+
+                case "ArrowRight":
+                    e.preventDefault()
+                    if (physicsActive) {
+                        setGravityDirection("right")
+                    } else if (moveableElement) {
+                        setElements((prev) =>
+                            prev.map((element, index) =>
+                                index === moveableElementIndexLocal
+                                    ? {
+                                          ...element,
+                                          x: Math.min(
+                                              logicalWidth - element.radius,
+                                              element.x + movementSpeed
+                                          ),
+                                      }
+                                    : element
+                            )
+                        )
+                    } else {
+                        if (elements.length > 0) {
+                            const nearestIndex =
+                                findNearestElementInDirection("right")
+                            if (nearestIndex >= 0) {
+                                setSelectedElementIndex(nearestIndex)
+                            } else if (selectedElementIndex < 0) {
+                                setSelectedElementIndex(0)
+                            }
+                        }
+                    }
+                    break
+
+                case " ": // Space key - toggle moveable state
+                    e.preventDefault()
+                    if (moveableElementIndexLocal >= 0) {
+                        // Stop moving
+                        setMoveableElementIndex(-1)
+                    } else if (selectedElementIndex >= 0) {
+                        // Start moving
+                        setMoveableElementIndex(selectedElementIndex)
+                        setSelectedElementIndex(-1)
+                    }
+                    break
+
+                case "Enter":
+                case "Return": // Enter key - toggle gravity
+                    e.preventDefault()
+                    if (elements.length > 0) {
+                        if (physicsActive) {
+                            setPhysicsActive(false)
+                        } else {
+                            // Split words into characters and start gravity
+                            splitWordsIntoCharacters()
+                            setPhysicsActive(true)
+                        }
+                    }
+                    break
+
+                case "1":
+                case "2":
+                case "3":
+                case "4":
+                case "5":
+                case "6":
+                case "7":
+                case "8":
+                case "9":
+                case "0":
+                    e.preventDefault()
+                    const numberValue =
+                        e.key === "0" ? 10 : Number.parseInt(e.key)
+
+                    const currentMoveableIndex = moveableElementIndex // Capture current state
+                    const currentSelectedIndex = selectedElementIndex // Capture current state
+
+                    let resizedText = false
+
+                    // Priority 1: Resize moveable text element
+                    if (
+                        currentMoveableIndex !== -1 &&
+                        elements[currentMoveableIndex]?.type === "text"
+                    ) {
+                        const newFontSize = Math.max(
+                            16,
+                            Math.min(72, 16 + (numberValue - 1) * 6)
+                        )
+                        const newTextRadius = Math.max(newFontSize / 2, 20)
+                        setElements((prev) =>
+                            prev.map((el, idx) =>
+                                idx === currentMoveableIndex
+                                    ? {
+                                          ...el,
+                                          fontSize: newFontSize,
+                                          radius: newTextRadius,
+                                          mass: newTextRadius / 10,
+                                      }
+                                    : el
+                            )
+                        )
+                        setLastUsedRadius(newTextRadius)
+                        resizedText = true
+                    }
+                    // Priority 2: Resize selected text element (if in keyboard mode)
+                    else if (
+                        currentSelectedIndex !== -1 &&
+                        elements[currentSelectedIndex]?.type === "text" &&
+                        keyboardMode // Important: only resize selected if keyboard interaction is active
+                    ) {
+                        const newFontSize = Math.max(
+                            16,
+                            Math.min(72, 16 + (numberValue - 1) * 6)
+                        )
+                        const newTextRadius = Math.max(newFontSize / 2, 20)
+                        setElements((prev) =>
+                            prev.map((el, idx) =>
+                                idx === currentSelectedIndex
+                                    ? {
+                                          ...el,
+                                          fontSize: newFontSize,
+                                          radius: newTextRadius,
+                                          mass: newTextRadius / 10,
+                                      }
+                                    : el
+                            )
+                        )
+                        setLastUsedRadius(newTextRadius)
+                        resizedText = true
+                    }
+
+                    // If no text element was resized, proceed to circle logic
+                    if (!resizedText) {
+                        const newCircleRadius = Math.max(
+                            minRadius,
+                            Math.min(
+                                maxRadius,
+                                minRadius +
+                                    (numberValue - 1) *
+                                        ((maxRadius - minRadius) / 9)
+                            )
+                        )
+
+                        let targetCircleIndex = -1
+                        if (
+                            currentMoveableIndex !== -1 &&
+                            elements[currentMoveableIndex]?.type === "circle"
+                        ) {
+                            targetCircleIndex = currentMoveableIndex
+                        } else if (
+                            currentSelectedIndex !== -1 &&
+                            elements[currentSelectedIndex]?.type === "circle" &&
+                            keyboardMode
+                        ) {
+                            targetCircleIndex = currentSelectedIndex
+                        }
+
+                        if (targetCircleIndex !== -1) {
+                            // Resize existing circle
+                            setElements((prev) =>
+                                prev.map((el, idx) =>
+                                    idx === targetCircleIndex
+                                        ? {
+                                              ...el,
+                                              radius: newCircleRadius,
+                                              mass: newCircleRadius / 10,
+                                          }
+                                        : el
+                                )
+                            )
+                            setLastUsedRadius(newCircleRadius)
+                        } else {
+                            // Create new circle
+                            setLastUsedRadius(newCircleRadius)
+                            const emptyArea = findMostEmptyArea(newCircleRadius)
+                            const newElementId = generateId()
+                            const newElement: Element = {
+                                id: newElementId,
+                                x: emptyArea.x,
+                                y: emptyArea.y,
+                                radius: newCircleRadius,
+                                color: circleColor,
+                                type: "circle",
+                                state: "default",
+                                vx: 0,
+                                vy: 0,
+                                mass: newCircleRadius / 10,
+                            }
+                            setElements((prev) => [...prev, newElement])
+                            setSelectedElementIndex(-1) // Clear selection after creating new
+                            setMoveableElementIndex(-1) // Clear moveable after creating new
+                        }
+                    }
+                    break
+
+                case "Escape":
+                    e.preventDefault()
+                    if (elements.length > 0) {
+                        // Start clearing process
+                        setIsClearing(true)
+                        setWasPhysicsActiveBeforeClearing(physicsActive)
+
+                        if (!physicsActive) {
+                            // Turn on physics if it wasn't already on
+                            setElements((prev) =>
+                                prev.map((element) => ({
+                                    ...element,
+                                    vx: (Math.random() - 0.5) * 2,
+                                    vy: Math.random() * -2,
+                                    mass: element.radius / 10,
+                                }))
+                            )
+                            setPhysicsActive(true)
+                        }
+
+                        // Clear any selected/moveable states
+                        setSelectedElementIndex(-1)
+                        setMoveableElementIndex(-1)
+                    }
+                    break
+
+                case "Backspace":
+                    e.preventDefault()
+                    // Check if we have a moveable text element to remove characters from
+                    const moveableElementLocal = moveableElement
+                    if (
+                        moveableElementLocal &&
+                        moveableElementLocal.type === "text" &&
+                        moveableElementLocal.text
+                    ) {
+                        if (moveableElementLocal.text.length > 1) {
+                            // Remove last character
+                            setElements((prev) =>
+                                prev.map((element, index) =>
+                                    index === moveableElementIndexLocal
+                                        ? {
+                                              ...element,
+                                              text: element.text!.slice(0, -1),
+                                          }
+                                        : element
+                                )
+                            )
+                        } else {
+                            // If only one character left, remove the entire element
+                            setElements((prev) =>
+                                prev.filter(
+                                    (_, index) =>
+                                        index !== moveableElementIndexLocal
+                                )
+                            )
+                            setMoveableElementIndex(-1)
+                            setSelectedElementIndex(-1)
+                        }
+                    }
+                    break
+
+                default:
+                    // Handle letter keys
+                    if (e.key.length === 1 && e.key.match(/[a-zA-Z]/)) {
+                        e.preventDefault()
+                        const letter = e.key.toLowerCase()
+
+                        // Check if we have a moveable text element to append to
+                        const moveableElementLocal = moveableElement
+                        if (
+                            moveableElementLocal &&
+                            moveableElementLocal.type === "text"
+                        ) {
+                            // Append to existing text element
+                            setElements((prev) =>
+                                prev.map((element, index) =>
+                                    index === moveableElementIndexLocal
+                                        ? {
+                                              ...element,
+                                              text:
+                                                  (element.text || "") + letter,
+                                          }
+                                        : element
+                                )
+                            )
+                        } else {
+                            // Create new text element with balanced placement - set to moveable for text editing
+                            const textRadius = Math.max(fontSize / 2, 20)
+                            const emptyArea = findMostEmptyArea(textRadius)
+                            const newElementId = generateId()
+
+                            const newElement: Element = {
+                                id: newElementId,
+                                x: emptyArea.x,
+                                y: emptyArea.y,
+                                radius: textRadius,
+                                color: textColor,
+                                type: "text",
+                                text: letter,
+                                fontSize: fontSize,
+                                state: "moveable", // Keep moveable for text editing
+                                vx: 0,
+                                vy: 0,
+                                mass: textRadius / 10,
+                            }
+                            setElements((prev) => [...prev, newElement])
+                            setMoveableElementIndex(elements.length)
+                            setSelectedElementIndex(-1)
+                        }
+                    }
+                    break
+            }
+        },
+        [
+            elements,
+            selectedElementIndex,
+            moveableElementIndex,
+            movementSpeed,
+            initialRadius,
+            circleColor,
+            textColor,
+            minRadius,
+            maxRadius,
+            physicsActive,
+            getSelectedElement,
+            findNearestElementInDirection,
+            findMostEmptyArea,
+            lastUsedRadius,
+            fontSize,
+            splitWordsIntoCharacters,
+            keyboardMode,
+        ]
+    )
+
+    // Update element states
+    useEffect(() => {
+        setElements((prev) =>
+            prev.map((element, index) => {
+                let state: Element["state"] = "default"
+
+                if (index === moveableElementIndex) {
+                    state = "moveable"
+                } else if (index === selectedElementIndex && keyboardMode) {
+                    state = "selected"
+                } else if (element.id === hoverElementId && !keyboardMode) {
+                    state = "selected"
+                }
+
+                return { ...element, state }
+            })
         )
-      } else if (moveableElementIndex >= 0 && e.buttons === 1) {
-        // Handle dragging moveable element
+    }, [
+        selectedElementIndex,
+        moveableElementIndex,
+        hoverElementId,
+        keyboardMode,
+    ])
+
+    // Modify the draw useCallback hook (around line 1100):
+    // Replace the section for drawing overlaps and update text rendering.
+    const draw = useCallback(() => {
         const canvas = canvasRef.current
         if (!canvas) return
 
+        const ctx = canvas.getContext("2d")
+        if (!ctx) return
+
         const rect = canvas.getBoundingClientRect()
         const logicalWidth = rect.width
         const logicalHeight = rect.height
 
-        const moveableElement = elements[moveableElementIndex]
-        if (moveableElement) {
-          const newX = Math.max(
-            moveableElement.radius,
-            Math.min(logicalWidth - moveableElement.radius, x - dragOffset.x),
-          )
-          const newY = Math.max(
-            moveableElement.radius,
-            Math.min(logicalHeight - moveableElement.radius, y - dragOffset.y),
-          )
+        ctx.fillStyle = physicsActive ? physicsBackgroundColor : backgroundColor
+        ctx.fillRect(0, 0, logicalWidth, logicalHeight)
 
-          setElements((prev) =>
-            prev.map((element, index) => (index === moveableElementIndex ? { ...element, x: newX, y: newY } : element)),
-          )
+        // Draw circles first (base colors and strokes)
+        elements.forEach((element) => {
+            if (element.type === "circle") {
+                ctx.beginPath()
+                ctx.arc(element.x, element.y, element.radius, 0, 2 * Math.PI)
+                ctx.fillStyle = element.color
+                ctx.fill()
+
+                let strokeColorToUse = strokeColor
+                let lineWidth = strokeWidth
+                switch (element.state) {
+                    case "selected":
+                        strokeColorToUse = selectedColor
+                        lineWidth = selectedStrokeWidth
+                        break
+                    case "moveable":
+                        strokeColorToUse = moveableColor
+                        lineWidth = moveableStrokeWidth
+                        break
+                    default:
+                        strokeColorToUse = strokeColor
+                        lineWidth = strokeWidth
+                }
+                ctx.strokeStyle = strokeColorToUse
+                ctx.lineWidth = lineWidth
+                ctx.stroke()
+
+                if (element.state === "selected") {
+                    ctx.beginPath()
+                    ctx.arc(
+                        element.x,
+                        element.y,
+                        element.radius + 5,
+                        0,
+                        2 * Math.PI
+                    )
+                    ctx.strokeStyle = selectedColor
+                    ctx.lineWidth = 1
+                    ctx.setLineDash([5, 5])
+                    ctx.stroke()
+                    ctx.setLineDash([])
+                }
+                if (element.state === "moveable") {
+                    ctx.beginPath()
+                    ctx.arc(
+                        element.x,
+                        element.y,
+                        element.radius + 8,
+                        0,
+                        2 * Math.PI
+                    )
+                    ctx.strokeStyle = moveableColor
+                    ctx.lineWidth = 2
+                    ctx.setLineDash([3, 3])
+                    ctx.stroke()
+                    ctx.setLineDash([])
+                }
+            }
+        })
+
+        // Draw overlapping areas for circles using layered clipping
+        const circleElements = elements.filter((el) => el.type === "circle")
+
+        // Draw 2-element overlaps
+        if (circleElements.length >= 2) {
+            for (let i = 0; i < circleElements.length; i++) {
+                for (let j = i + 1; j < circleElements.length; j++) {
+                    const c1 = circleElements[i]
+                    const c2 = circleElements[j]
+                    if (!circlesOverlap(c1, c2)) continue
+
+                    ctx.save()
+                    ctx.beginPath()
+                    ctx.arc(c1.x, c1.y, c1.radius, 0, 2 * Math.PI)
+                    ctx.clip()
+                    ctx.beginPath()
+                    ctx.arc(c2.x, c2.y, c2.radius, 0, 2 * Math.PI) // Path for c2
+                    // Fill c2's path, restricted by c1's clip
+                    ctx.fillStyle = getOverlapColor(1) // 2 elements total -> overlapCount = 1
+                    ctx.fill()
+                    ctx.restore()
+                }
+            }
         }
-      } else {
-        // Handle hover
-        handleMouseInteraction()
-        const result = findElementAt(x, y)
-        setHoverElementId(result?.element.id || null)
-      }
-    },
-    [
-      moveableElementIndex,
-      dragOffset,
-      findElementAt,
-      handleMouseInteraction,
-      isCreatingElement,
-      creationStart,
-      creatingElementId,
-      minRadius,
-      maxRadius,
-      elements,
-    ],
-  )
 
-  // Handle mouse up
-  const handleMouseUp = useCallback(() => {
-    if (isCreatingElement && creatingElementId.current) {
-      // Finish creating element
-      setIsCreatingElement(false)
-      setCreationStart(null)
-      creatingElementId.current = null
-    }
+        // Draw 3-element overlaps
+        if (circleElements.length >= 3) {
+            for (let i = 0; i < circleElements.length; i++) {
+                for (let j = i + 1; j < circleElements.length; j++) {
+                    for (let k = j + 1; k < circleElements.length; k++) {
+                        const c1 = circleElements[i]
+                        const c2 = circleElements[j]
+                        const c3 = circleElements[k]
 
-    // Reset moveable element when mouse is released
-    if (moveableElementIndex >= 0) {
-      setMoveableElementIndex(-1)
-    }
-  }, [isCreatingElement, creatingElementId, moveableElementIndex])
+                        // Basic check, can be improved for actual 3-way intersection
+                        if (
+                            !circlesOverlap(c1, c2) ||
+                            !circlesOverlap(c1, c3) ||
+                            !circlesOverlap(c2, c3)
+                        )
+                            continue
 
-  // Handle touch start
-  const handleTouchStart = useCallback(
-    (e: TouchEvent) => {
-      e.preventDefault()
-      handleMouseInteraction()
-
-      if (e.touches.length === 2) {
-        // Two finger pinch
-        const touch1 = e.touches[0]
-        const touch2 = e.touches[1]
-        const center = getTouchCenter(touch1, touch2)
-        const result = findElementAt(center.x, center.y)
-
-        if (result) {
-          const { element, index } = result
-          setIsPinching(true)
-          setPinchStartDistance(getTouchDistance(touch1, touch2))
-          setPinchStartRadius(element.radius)
-          setPinchElementIndex(index)
-
-          // Make the pinched element moveable
-          setMoveableElementIndex(index)
-          setSelectedElementIndex(-1)
-          setPhysicsActive(false)
+                        ctx.save()
+                        ctx.beginPath()
+                        ctx.arc(c1.x, c1.y, c1.radius, 0, 2 * Math.PI)
+                        ctx.clip()
+                        ctx.beginPath()
+                        ctx.arc(c2.x, c2.y, c2.radius, 0, 2 * Math.PI)
+                        ctx.clip()
+                        ctx.beginPath()
+                        ctx.arc(c3.x, c3.y, c3.radius, 0, 2 * Math.PI) // Path for c3
+                        // Fill c3's path, restricted by c1 ∩ c2 clip
+                        ctx.fillStyle = getOverlapColor(2) // 3 elements total -> overlapCount = 2
+                        ctx.fill()
+                        ctx.restore()
+                    }
+                }
+            }
         }
-      } else if (e.touches.length === 1) {
-        // Single finger - treat like mouse
-        const { x, y } = getCanvasCoordinates(e)
-        const result = findElementAt(x, y)
 
-        if (result) {
-          const { element, index } = result
-          setMoveableElementIndex(index)
-          setSelectedElementIndex(-1)
-          setPhysicsActive(false)
+        // Draw 4-element (and more) overlaps
+        if (circleElements.length >= 4) {
+            for (let i = 0; i < circleElements.length; i++) {
+                for (let j = i + 1; j < circleElements.length; j++) {
+                    for (let k = j + 1; k < circleElements.length; k++) {
+                        for (let l = k + 1; l < circleElements.length; l++) {
+                            const c1 = circleElements[i]
+                            const c2 = circleElements[j]
+                            const c3 = circleElements[k]
+                            const c4 = circleElements[l]
 
-          setDragOffset({
-            x: x - element.x,
-            y: y - element.y,
-          })
-        } else {
-          setMoveableElementIndex(-1)
-          setSelectedElementIndex(-1)
+                            if (
+                                !circlesOverlap(c1, c2) ||
+                                !circlesOverlap(c1, c3) ||
+                                !circlesOverlap(c1, c4) ||
+                                !circlesOverlap(c2, c3) ||
+                                !circlesOverlap(c2, c4) ||
+                                !circlesOverlap(c3, c4)
+                            )
+                                continue
 
-          const newElementId = generateId()
-          const newElement: Element = {
-            id: newElementId,
-            x,
-            y,
-            radius: 5,
-            color: circleColor,
-            type: "circle",
-            state: "default",
-            vx: 0,
-            vy: 0,
-            mass: 1,
-          }
-          setElements((prev) => [...prev, newElement])
-          setIsCreatingElement(true)
-          setCreationStart({ x, y })
-          creatingElementId.current = newElementId
+                            ctx.save()
+                            ctx.beginPath()
+                            ctx.arc(c1.x, c1.y, c1.radius, 0, 2 * Math.PI)
+                            ctx.clip()
+                            ctx.beginPath()
+                            ctx.arc(c2.x, c2.y, c2.radius, 0, 2 * Math.PI)
+                            ctx.clip()
+                            ctx.beginPath()
+                            ctx.arc(c3.x, c3.y, c3.radius, 0, 2 * Math.PI)
+                            ctx.clip()
+                            ctx.beginPath()
+                            ctx.arc(c4.x, c4.y, c4.radius, 0, 2 * Math.PI) // Path for c4
+                            // Fill c4's path, restricted by c1 ∩ c2 ∩ c3 clip
+                            ctx.fillStyle = getOverlapColor(3) // 4+ elements total -> overlapCount = 3
+                            ctx.fill()
+                            ctx.restore()
+                        }
+                    }
+                }
+            }
         }
-      }
-    },
-    [findElementAt, handleMouseInteraction, circleColor],
-  )
 
-  // Handle touch move
-  const handleTouchMove = useCallback(
-    (e: TouchEvent) => {
-      e.preventDefault()
+        // Draw text elements with character-level overlap detection
+        elements.forEach((element) => {
+            if (element.type === "text" && element.text) {
+                ctx.font = `${element.fontSize || fontSize}px Arial`
+                ctx.textAlign = "center"
+                ctx.textBaseline = "middle"
 
-      if (isPinching && e.touches.length === 2 && pinchElementIndex >= 0) {
-        // Handle pinch resize
-        const touch1 = e.touches[0]
-        const touch2 = e.touches[1]
-        const currentDistance = getTouchDistance(touch1, touch2)
-        const scale = currentDistance / pinchStartDistance
+                if (element.text.length > 1) {
+                    const chars = element.text.split("")
+                    const charSpacing = (element.fontSize || fontSize) * 0.6
+                    const startX =
+                        element.x - ((chars.length - 1) * charSpacing) / 2
 
-        const element = elements[pinchElementIndex]
-        if (element.type === "circle") {
-          const newRadius = Math.max(minRadius, Math.min(maxRadius, pinchStartRadius * scale))
-          setLastUsedRadius(newRadius)
+                    chars.forEach((char, index) => {
+                        const charX = startX + index * charSpacing
+                        const charY = element.y
+                        const charWidth = ctx.measureText(char).width
+                        const charHeight = element.fontSize || fontSize
 
-          setElements((prev) =>
-            prev.map((el, index) =>
-              index === pinchElementIndex
-                ? {
-                    ...el,
-                    radius: newRadius,
-                    mass: newRadius / 10,
-                  }
-                : el,
-            ),
-          )
-        } else if (element.type === "text") {
-          const newFontSize = Math.max(16, Math.min(72, (element.fontSize || fontSize) * scale))
-          const newRadius = Math.max(newFontSize / 2, 20)
+                        const overlapDegree = countCharacterOverlaps(
+                            // Use new function
+                            charX,
+                            charY,
+                            charWidth,
+                            charHeight,
+                            elements,
+                            element.id
+                        )
 
-          setElements((prev) =>
-            prev.map((el, index) =>
-              index === pinchElementIndex
-                ? {
-                    ...el,
-                    fontSize: newFontSize,
-                    radius: newRadius,
-                    mass: newRadius / 10,
-                  }
-                : el,
-            ),
-          )
+                        ctx.fillStyle =
+                            overlapDegree > 0
+                                ? getOverlapColor(overlapDegree)
+                                : element.color
+                        ctx.fillText(char, charX, charY)
+                    })
+                } else {
+                    const charWidth = ctx.measureText(element.text).width
+                    const charHeight = element.fontSize || fontSize
+                    const overlapDegree = countCharacterOverlaps(
+                        // Use new function
+                        element.x,
+                        element.y,
+                        charWidth,
+                        charHeight,
+                        elements,
+                        element.id
+                    )
+
+                    ctx.fillStyle =
+                        overlapDegree > 0
+                            ? getOverlapColor(overlapDegree)
+                            : element.color
+                    ctx.fillText(element.text, element.x, element.y)
+                }
+
+                // Stroke and indicators for text (unchanged from original)
+                let strokeColorToUse = strokeColor
+                let lineWidth = strokeWidth
+                switch (element.state) {
+                    case "selected":
+                        strokeColorToUse = selectedColor
+                        lineWidth = selectedStrokeWidth
+                        break
+                    case "moveable":
+                        strokeColorToUse = moveableColor
+                        lineWidth = moveableStrokeWidth
+                        break
+                    default:
+                        strokeColorToUse = strokeColor
+                        lineWidth = strokeWidth
+                }
+
+                if (element.state === "selected") {
+                    const dims = getTextDimensions(
+                        element.text,
+                        element.fontSize || fontSize
+                    )
+                    ctx.strokeStyle = selectedColor
+                    ctx.lineWidth = 1
+                    ctx.setLineDash([5, 5])
+                    ctx.strokeRect(
+                        element.x - dims.width / 2 - 5,
+                        element.y - dims.height / 2 - 5,
+                        dims.width + 10,
+                        dims.height + 10
+                    )
+                    ctx.setLineDash([])
+                }
+                if (element.state === "moveable") {
+                    const dims = getTextDimensions(
+                        element.text,
+                        element.fontSize || fontSize
+                    )
+                    ctx.strokeStyle = moveableColor
+                    ctx.lineWidth = 2
+                    ctx.setLineDash([3, 3])
+                    ctx.strokeRect(
+                        element.x - dims.width / 2 - 8,
+                        element.y - dims.height / 2 - 8,
+                        dims.width + 16,
+                        dims.height + 16
+                    )
+                    ctx.setLineDash([])
+                }
+            }
+        })
+    }, [
+        elements,
+        backgroundColor,
+        physicsBackgroundColor,
+        strokeColor,
+        strokeWidth,
+        selectedColor,
+        moveableColor,
+        physicsActive,
+        fontSize,
+        getTextDimensions,
+        countCharacterOverlaps,
+        circlesOverlap,
+        getOverlapColor,
+        overlapColor2,
+        selectedStrokeWidth,
+        moveableStrokeWidth,
+        distance,
+    ])
+
+    // Handle mouse down
+    const handleMouseDown = useCallback(
+        (e: MouseEvent) => {
+            e.preventDefault()
+            handleMouseInteraction()
+
+            const { x, y } = getCanvasCoordinates(e)
+            const result = findElementAt(x, y)
+
+            if (result) {
+                const { element, index } = result
+                // Make clicked element moveable
+                setMoveableElementIndex(index)
+                setSelectedElementIndex(-1)
+                setPhysicsActive(false) // Stop physics when dragging
+
+                setDragOffset({
+                    x: x - element.x,
+                    y: y - element.y,
+                })
+            } else {
+                // Clear any moveable element when clicking outside
+                setMoveableElementIndex(-1)
+                setSelectedElementIndex(-1)
+
+                // Start creating new circle
+                const newElementId = generateId()
+                const newElement: Element = {
+                    id: newElementId,
+                    x,
+                    y,
+                    radius: 5,
+                    color: circleColor,
+                    type: "circle",
+                    state: "default",
+                    vx: 0,
+                    vy: 0,
+                    mass: 1,
+                }
+                setElements((prev) => [...prev, newElement])
+                setIsCreatingElement(true)
+                setCreationStart({ x, y })
+                creatingElementId.current = newElementId
+            }
+        },
+        [findElementAt, handleMouseInteraction, circleColor]
+    )
+
+    // Handle mouse move
+    const handleMouseMove = useCallback(
+        (e: MouseEvent) => {
+            const { x, y } = getCanvasCoordinates(e)
+
+            if (
+                isCreatingElement &&
+                creationStart &&
+                creatingElementId.current
+            ) {
+                // Update radius of circle being created
+                const dragDistance = distance(
+                    creationStart.x,
+                    creationStart.y,
+                    x,
+                    y
+                )
+                const newRadius = Math.max(
+                    minRadius,
+                    Math.min(maxRadius, dragDistance)
+                )
+
+                setElements((prev) =>
+                    prev.map((element) =>
+                        element.id === creatingElementId.current
+                            ? {
+                                  ...element,
+                                  radius: newRadius,
+                                  mass: newRadius / 10,
+                              }
+                            : element
+                    )
+                )
+            } else if (moveableElementIndex >= 0 && e.buttons === 1) {
+                // Handle dragging moveable element
+                const canvas = canvasRef.current
+                if (!canvas) return
+
+                const rect = canvas.getBoundingClientRect()
+                const logicalWidth = rect.width
+                const logicalHeight = rect.height
+
+                const moveableElement = elements[moveableElementIndex]
+                if (moveableElement) {
+                    const newX = Math.max(
+                        moveableElement.radius,
+                        Math.min(
+                            logicalWidth - moveableElement.radius,
+                            x - dragOffset.x
+                        )
+                    )
+                    const newY = Math.max(
+                        moveableElement.radius,
+                        Math.min(
+                            logicalHeight - moveableElement.radius,
+                            y - dragOffset.y
+                        )
+                    )
+
+                    setElements((prev) =>
+                        prev.map((element, index) =>
+                            index === moveableElementIndex
+                                ? { ...element, x: newX, y: newY }
+                                : element
+                        )
+                    )
+                }
+            } else {
+                // Handle hover
+                handleMouseInteraction()
+                const result = findElementAt(x, y)
+                setHoverElementId(result?.element.id || null)
+            }
+        },
+        [
+            moveableElementIndex,
+            dragOffset,
+            findElementAt,
+            handleMouseInteraction,
+            isCreatingElement,
+            creationStart,
+            creatingElementId,
+            minRadius,
+            maxRadius,
+            elements,
+        ]
+    )
+
+    // Handle mouse up
+    const handleMouseUp = useCallback(() => {
+        if (isCreatingElement && creatingElementId.current) {
+            // Finish creating element
+            setIsCreatingElement(false)
+            setCreationStart(null)
+            creatingElementId.current = null
         }
-      } else if (e.touches.length === 1) {
-        // Single finger - treat like mouse move
-        const { x, y } = getCanvasCoordinates(e)
 
-        if (isCreatingElement && creationStart && creatingElementId.current) {
-          const dragDistance = distance(creationStart.x, creationStart.y, x, y)
-          const newRadius = Math.max(minRadius, Math.min(maxRadius, dragDistance))
-
-          setElements((prev) =>
-            prev.map((element) =>
-              element.id === creatingElementId.current
-                ? {
-                    ...element,
-                    radius: newRadius,
-                    mass: newRadius / 10,
-                  }
-                : element,
-            ),
-          )
-        } else if (moveableElementIndex >= 0) {
-          const canvas = canvasRef.current
-          if (!canvas) return
-
-          const rect = canvas.getBoundingClientRect()
-          const logicalWidth = rect.width
-          const logicalHeight = rect.height
-
-          const moveableElement = elements[moveableElementIndex]
-          if (moveableElement) {
-            const newX = Math.max(
-              moveableElement.radius,
-              Math.min(logicalWidth - moveableElement.radius, x - dragOffset.x),
-            )
-            const newY = Math.max(
-              moveableElement.radius,
-              Math.min(logicalHeight - moveableElement.radius, y - dragOffset.y),
-            )
-
-            setElements((prev) =>
-              prev.map((element, index) =>
-                index === moveableElementIndex ? { ...element, x: newX, y: newY } : element,
-              ),
-            )
-          }
+        // Reset moveable element when mouse is released
+        if (moveableElementIndex >= 0) {
+            setMoveableElementIndex(-1)
         }
-      }
-    },
-    [
-      isPinching,
-      pinchElementIndex,
-      pinchStartDistance,
-      pinchStartRadius,
-      minRadius,
-      maxRadius,
-      isCreatingElement,
-      creationStart,
-      creatingElementId,
-      moveableElementIndex,
-      dragOffset,
-      lastUsedRadius,
-      fontSize,
-      elements,
-    ],
-  )
+    }, [isCreatingElement, creatingElementId, moveableElementIndex])
 
-  // Handle touch end
-  const handleTouchEnd = useCallback(
-    (e: TouchEvent) => {
-      e.preventDefault()
+    // Handle touch start
+    const handleTouchStart = useCallback(
+        (e: TouchEvent) => {
+            e.preventDefault()
+            handleMouseInteraction()
 
-      if (isPinching) {
-        setIsPinching(false)
-        setPinchStartDistance(0)
-        setPinchStartRadius(0)
-        setPinchElementIndex(-1)
-      }
+            if (e.touches.length === 2) {
+                // Two finger pinch
+                const touch1 = e.touches[0]
+                const touch2 = e.touches[1]
+                const center = getTouchCenter(touch1, touch2)
+                const result = findElementAt(center.x, center.y)
 
-      if (isCreatingElement && creatingElementId.current && e.touches.length === 0) {
-        setIsCreatingElement(false)
-        setCreationStart(null)
-        creatingElementId.current = null
-      }
-    },
-    [isPinching, isCreatingElement, creatingElementId],
-  )
+                if (result) {
+                    const { element, index } = result
+                    setIsPinching(true)
+                    setPinchStartDistance(getTouchDistance(touch1, touch2))
+                    setPinchStartRadius(element.radius)
+                    setPinchElementIndex(index)
 
-  const handleContainerClick = useCallback(() => {
-    if (containerRef.current) {
-      containerRef.current.focus()
-    }
-  }, [])
+                    // Make the pinched element moveable
+                    setMoveableElementIndex(index)
+                    setSelectedElementIndex(-1)
+                    setPhysicsActive(false)
+                }
+            } else if (e.touches.length === 1) {
+                // Single finger - treat like mouse
+                const { x, y } = getCanvasCoordinates(e)
+                const result = findElementAt(x, y)
 
-  // Setup canvas and event listeners
-  useEffect(() => {
-    const canvas = canvasRef.current
-    const container = containerRef.current
-    if (!canvas || !container) return
+                if (result) {
+                    const { element, index } = result
+                    setMoveableElementIndex(index)
+                    setSelectedElementIndex(-1)
+                    setPhysicsActive(false)
 
-    const resizeCanvas = () => {
-      const rect = container.getBoundingClientRect()
+                    setDragOffset({
+                        x: x - element.x,
+                        y: y - element.y,
+                    })
+                } else {
+                    setMoveableElementIndex(-1)
+                    setSelectedElementIndex(-1)
 
-      // Set canvas size to match container exactly
-      canvas.width = rect.width
-      canvas.height = rect.height
-      canvas.style.width = rect.width + "px"
-      canvas.style.height = rect.height + "px"
+                    const newElementId = generateId()
+                    const newElement: Element = {
+                        id: newElementId,
+                        x,
+                        y,
+                        radius: 5,
+                        color: circleColor,
+                        type: "circle",
+                        state: "default",
+                        vx: 0,
+                        vy: 0,
+                        mass: 1,
+                    }
+                    setElements((prev) => [...prev, newElement])
+                    setIsCreatingElement(true)
+                    setCreationStart({ x, y })
+                    creatingElementId.current = newElementId
+                }
+            }
+        },
+        [findElementAt, handleMouseInteraction, circleColor]
+    )
 
-      draw()
-    }
+    // Handle touch move
+    const handleTouchMove = useCallback(
+        (e: TouchEvent) => {
+            e.preventDefault()
 
-    resizeCanvas()
+            if (
+                isPinching &&
+                e.touches.length === 2 &&
+                pinchElementIndex >= 0
+            ) {
+                // Handle pinch resize
+                const touch1 = e.touches[0]
+                const touch2 = e.touches[1]
+                const currentDistance = getTouchDistance(touch1, touch2)
+                const scale = currentDistance / pinchStartDistance
 
-    canvas.addEventListener("mousedown", handleMouseDown)
-    canvas.addEventListener("mousemove", handleMouseMove)
-    canvas.addEventListener("mouseup", handleMouseUp)
-    canvas.addEventListener("touchstart", handleTouchStart, {
-      passive: false,
-    })
-    canvas.addEventListener("touchmove", handleTouchMove, {
-      passive: false,
-    })
-    canvas.addEventListener("touchend", handleTouchEnd, { passive: false })
-    canvas.addEventListener("mouseleave", () => {
-      setHoverElementId(null)
-    })
-    canvas.addEventListener("wheel", handleWheel, { passive: false })
+                const element = elements[pinchElementIndex]
+                if (element.type === "circle") {
+                    const newRadius = Math.max(
+                        minRadius,
+                        Math.min(maxRadius, pinchStartRadius * scale)
+                    )
+                    setLastUsedRadius(newRadius)
 
-    container.addEventListener("keydown", handleKeyDown)
-    container.focus()
+                    setElements((prev) =>
+                        prev.map((el, index) =>
+                            index === pinchElementIndex
+                                ? {
+                                      ...el,
+                                      radius: newRadius,
+                                      mass: newRadius / 10,
+                                  }
+                                : el
+                        )
+                    )
+                } else if (element.type === "text") {
+                    const newFontSize = Math.max(
+                        16,
+                        Math.min(72, (element.fontSize || fontSize) * scale)
+                    )
+                    const newRadius = Math.max(newFontSize / 2, 20)
 
-    window.addEventListener("resize", resizeCanvas)
+                    setElements((prev) =>
+                        prev.map((el, index) =>
+                            index === pinchElementIndex
+                                ? {
+                                      ...el,
+                                      fontSize: newFontSize,
+                                      radius: newRadius,
+                                      mass: newRadius / 10,
+                                  }
+                                : el
+                        )
+                    )
+                }
+            } else if (e.touches.length === 1) {
+                // Single finger - treat like mouse move
+                const { x, y } = getCanvasCoordinates(e)
 
-    return () => {
-      canvas.removeEventListener("mousedown", handleMouseDown)
-      canvas.removeEventListener("mousemove", handleMouseMove)
-      canvas.removeEventListener("mouseup", handleMouseUp)
-      canvas.removeEventListener("touchstart", handleTouchStart)
-      canvas.removeEventListener("touchmove", handleTouchMove)
-      canvas.removeEventListener("touchend", handleTouchEnd)
-      canvas.removeEventListener("mouseleave", () => {
-        setHoverElementId(null)
-      })
-      canvas.removeEventListener("wheel", handleWheel)
-      container.removeEventListener("keydown", handleKeyDown)
-      window.removeEventListener("resize", resizeCanvas)
+                if (
+                    isCreatingElement &&
+                    creationStart &&
+                    creatingElementId.current
+                ) {
+                    const dragDistance = distance(
+                        creationStart.x,
+                        creationStart.y,
+                        x,
+                        y
+                    )
+                    const newRadius = Math.max(
+                        minRadius,
+                        Math.min(maxRadius, dragDistance)
+                    )
 
-      if (mouseInteractionTimeoutRef.current) {
-        clearTimeout(mouseInteractionTimeoutRef.current)
-      }
-    }
-  }, [
-    handleMouseDown,
-    handleMouseMove,
-    handleMouseUp,
-    handleTouchStart,
-    handleTouchMove,
-    handleTouchEnd,
-    handleKeyDown,
-    draw,
-    handleWheel,
-  ])
+                    setElements((prev) =>
+                        prev.map((element) =>
+                            element.id === creatingElementId.current
+                                ? {
+                                      ...element,
+                                      radius: newRadius,
+                                      mass: newRadius / 10,
+                                  }
+                                : element
+                        )
+                    )
+                } else if (moveableElementIndex >= 0) {
+                    const canvas = canvasRef.current
+                    if (!canvas) return
 
-  // Redraw when elements change
-  useEffect(() => {
-    draw()
-  }, [draw])
+                    const rect = canvas.getBoundingClientRect()
+                    const logicalWidth = rect.width
+                    const logicalHeight = rect.height
 
-  return (
-    <motion.div
-      ref={containerRef}
-      onClick={handleContainerClick}
-      style={{
-        ...style,
-        width: "100%",
-        height: "100%",
-        minHeight: "400px",
-        position: "relative",
-        overflow: "hidden",
-        outline: "none",
-        cursor: "crosshair",
-      }}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.3 }}
-      tabIndex={0}
-    >
-      <canvas
-        ref={canvasRef}
-        style={{
-          display: "block",
-          width: "100%",
-          height: "100%",
-          touchAction: "none",
-        }}
-      />
+                    const moveableElement = elements[moveableElementIndex]
+                    if (moveableElement) {
+                        const newX = Math.max(
+                            moveableElement.radius,
+                            Math.min(
+                                logicalWidth - moveableElement.radius,
+                                x - dragOffset.x
+                            )
+                        )
+                        const newY = Math.max(
+                            moveableElement.radius,
+                            Math.min(
+                                logicalHeight - moveableElement.radius,
+                                y - dragOffset.y
+                            )
+                        )
 
-      {/* Instructions overlay */}
-      {elements.length === 0 && (
-        <div
-          style={{
-            position: "absolute",
-            top: "50%",
-            left: "50%",
-            transform: "translate(-50%, -50%)",
-            textAlign: "center",
-            pointerEvents: "none",
-            color: "#666",
-            fontSize: "16px",
-          }}
+                        setElements((prev) =>
+                            prev.map((element, index) =>
+                                index === moveableElementIndex
+                                    ? { ...element, x: newX, y: newY }
+                                    : element
+                            )
+                        )
+                    }
+                }
+            }
+        },
+        [
+            isPinching,
+            pinchElementIndex,
+            pinchStartDistance,
+            pinchStartRadius,
+            minRadius,
+            maxRadius,
+            isCreatingElement,
+            creationStart,
+            creatingElementId,
+            moveableElementIndex,
+            dragOffset,
+            lastUsedRadius,
+            fontSize,
+            elements,
+        ]
+    )
+
+    // Handle touch end
+    const handleTouchEnd = useCallback(
+        (e: TouchEvent) => {
+            e.preventDefault()
+
+            if (isPinching) {
+                setIsPinching(false)
+                setPinchStartDistance(0)
+                setPinchStartRadius(0)
+                setPinchElementIndex(-1)
+            }
+
+            if (
+                isCreatingElement &&
+                creatingElementId.current &&
+                e.touches.length === 0
+            ) {
+                setIsCreatingElement(false)
+                setCreationStart(null)
+                creatingElementId.current = null
+            }
+        },
+        [isPinching, isCreatingElement, creatingElementId]
+    )
+
+    const handleContainerClick = useCallback(() => {
+        if (containerRef.current) {
+            containerRef.current.focus()
+        }
+    }, [])
+
+    // Setup canvas and event listeners
+    useEffect(() => {
+        const canvas = canvasRef.current
+        const container = containerRef.current
+        if (!canvas || !container) return
+
+        const resizeCanvas = () => {
+            const rect = container.getBoundingClientRect()
+
+            // Set canvas size to match container exactly
+            canvas.width = rect.width
+            canvas.height = rect.height
+            canvas.style.width = rect.width + "px"
+            canvas.style.height = rect.height + "px"
+
+            draw()
+        }
+
+        resizeCanvas()
+
+        canvas.addEventListener("mousedown", handleMouseDown)
+        canvas.addEventListener("mousemove", handleMouseMove)
+        canvas.addEventListener("mouseup", handleMouseUp)
+        canvas.addEventListener("touchstart", handleTouchStart, {
+            passive: false,
+        })
+        canvas.addEventListener("touchmove", handleTouchMove, {
+            passive: false,
+        })
+        canvas.addEventListener("touchend", handleTouchEnd, { passive: false })
+        canvas.addEventListener("mouseleave", () => {
+            setHoverElementId(null)
+        })
+        canvas.addEventListener("wheel", handleWheel, { passive: false })
+
+        container.addEventListener("keydown", handleKeyDown)
+        container.focus()
+
+        window.addEventListener("resize", resizeCanvas)
+
+        return () => {
+            canvas.removeEventListener("mousedown", handleMouseDown)
+            canvas.removeEventListener("mousemove", handleMouseMove)
+            canvas.removeEventListener("mouseup", handleMouseUp)
+            canvas.removeEventListener("touchstart", handleTouchStart)
+            canvas.removeEventListener("touchmove", handleTouchMove)
+            canvas.removeEventListener("touchend", handleTouchEnd)
+            canvas.removeEventListener("mouseleave", () => {
+                setHoverElementId(null)
+            })
+            canvas.removeEventListener("wheel", handleWheel)
+            container.removeEventListener("keydown", handleKeyDown)
+            window.removeEventListener("resize", resizeCanvas)
+
+            if (mouseInteractionTimeoutRef.current) {
+                clearTimeout(mouseInteractionTimeoutRef.current)
+            }
+        }
+    }, [
+        handleMouseDown,
+        handleMouseMove,
+        handleMouseUp,
+        handleTouchStart,
+        handleTouchMove,
+        handleTouchEnd,
+        handleKeyDown,
+        draw,
+        handleWheel,
+    ])
+
+    // Redraw when elements change
+    useEffect(() => {
+        draw()
+    }, [draw])
+
+    return (
+        <motion.div
+            ref={containerRef}
+            onClick={handleContainerClick}
+            style={{
+                ...style,
+                width: "100%",
+                height: "100%",
+                minHeight: "400px",
+                position: "relative",
+                overflow: "hidden",
+                outline: "none",
+                cursor: "crosshair",
+            }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.3 }}
+            tabIndex={0}
         >
-          <div>Press numbers (1-9,0) to create circles or letters (a-z) for text</div>
-          <div style={{ fontSize: "14px", marginTop: "8px" }}>
-            Arrow keys to select • Space to toggle move • Enter for gravity • ESC to clear
-          </div>
-        </div>
-      )}
+            <canvas
+                ref={canvasRef}
+                style={{
+                    display: "block",
+                    width: "100%",
+                    height: "100%",
+                    touchAction: "none",
+                }}
+            />
 
-      {/* Controls help */}
-      <div
-        style={{
-          position: "absolute",
-          top: "10px",
-          left: "10px",
-          background: "rgba(0,0,0,0.7)",
-          color: "white",
-          padding: "10px",
-          borderRadius: "5px",
-          fontSize: "12px",
-          pointerEvents: "none",
-          opacity: elements.length > 0 ? 1 : 0,
-          transition: "opacity 0.3s",
-        }}
-      >
-        <div>🎮 Controls:</div>
-        <div>1-9,0 = Circles • A-Z = Letters • ↑↓←→ Select/Move • Space = Toggle Move</div>
-        <div>Enter = Gravity • ESC = Clear • Click & Drag = Create/Move • Pinch/Wheel = Resize</div>
-        {selectedElementIndex >= 0 && keyboardMode && <div>📍 Selected: Element {selectedElementIndex + 1}</div>}
-        {moveableElementIndex >= 0 && <div>🎯 Moving: Element {moveableElementIndex + 1}</div>}
-        {physicsActive && <div>🌍 Gravity: {gravityDirection.toUpperCase()} (use arrow keys to change)</div>}
-      </div>
-    </motion.div>
-  )
+            {/* Instructions overlay */}
+            {elements.length === 0 && (
+                <div
+                    style={{
+                        position: "absolute",
+                        top: "50%",
+                        left: "50%",
+                        transform: "translate(-50%, -50%)",
+                        textAlign: "center",
+                        pointerEvents: "none",
+                        color: "#666",
+                        fontSize: "16px",
+                    }}
+                >
+                    <div>
+                        Press numbers (1-9,0) to create circles or letters (a-z)
+                        for text
+                    </div>
+                    <div style={{ fontSize: "14px", marginTop: "8px" }}>
+                        Arrow keys to select • Space to toggle move • Enter for
+                        gravity • ESC to clear
+                    </div>
+                </div>
+            )}
+
+            {/* Controls help */}
+            <div
+                style={{
+                    position: "absolute",
+                    top: "10px",
+                    left: "10px",
+                    background: "rgba(0,0,0,0.7)",
+                    color: "white",
+                    padding: "10px",
+                    borderRadius: "5px",
+                    fontSize: "12px",
+                    pointerEvents: "none",
+                    opacity: elements.length > 0 ? 1 : 0,
+                    transition: "opacity 0.3s",
+                }}
+            >
+                <div>🎮 Controls:</div>
+                <div>
+                    1-9,0 = Circles • A-Z = Letters • ↑↓←→ Select/Move • Space =
+                    Toggle Move
+                </div>
+                <div>
+                    Enter = Gravity • ESC = Clear • Click & Drag = Create/Move •
+                    Pinch/Wheel = Resize
+                </div>
+                {selectedElementIndex >= 0 && keyboardMode && (
+                    <div>📍 Selected: Element {selectedElementIndex + 1}</div>
+                )}
+                {moveableElementIndex >= 0 && (
+                    <div>🎯 Moving: Element {moveableElementIndex + 1}</div>
+                )}
+                {physicsActive && (
+                    <div>
+                        🌍 Gravity: {gravityDirection.toUpperCase()} (use arrow
+                        keys to change)
+                    </div>
+                )}
+            </div>
+        </motion.div>
+    )
 }
 
 // Property Controls
 addPropertyControls(InteractiveCanvas, {
-  backgroundColor: {
-    type: ControlType.Color,
-    title: "Background",
-    defaultValue: "#f0f0f0",
-  },
-  physicsBackgroundColor: {
-    type: ControlType.Color,
-    title: "Physics Background",
-    defaultValue: "#e8f4f8",
-  },
-  circleColor: {
-    type: ControlType.Color,
-    title: "Circle Color",
-    defaultValue: "#3b82f6",
-  },
-  textColor: {
-    type: ControlType.Color,
-    title: "Text Color",
-    defaultValue: "#2563eb",
-  },
-  selectedColor: {
-    type: ControlType.Color,
-    title: "Selected/Hover Color",
-    defaultValue: "#ff00ff",
-  },
-  moveableColor: {
-    type: ControlType.Color,
-    title: "Moveable Color",
-    defaultValue: "#ff0000",
-  },
-  strokeColor: {
-    type: ControlType.Color,
-    title: "Default Stroke Color",
-    defaultValue: "#000000",
-  },
-  strokeWidth: {
-    type: ControlType.Number,
-    title: "Stroke Width",
-    min: 1,
-    max: 10,
-    step: 1,
-    unit: "px",
-    defaultValue: 2,
-  },
-  selectedStrokeWidth: {
-    type: ControlType.Number,
-    title: "Selected Stroke Width",
-    min: 1,
-    max: 10,
-    step: 1,
-    unit: "px",
-    defaultValue: 3,
-  },
-  moveableStrokeWidth: {
-    type: ControlType.Number,
-    title: "Moveable Stroke Width",
-    min: 1,
-    max: 10,
-    step: 1,
-    unit: "px",
-    defaultValue: 4,
-  },
-  overlapColor2: {
-    type: ControlType.Color,
-    title: "2-Element Overlap Color",
-    defaultValue: "#ff6b35",
-  },
-  overlapColor3: {
-    type: ControlType.Color,
-    title: "3-Element Overlap Color",
-    defaultValue: "#ff3535",
-  },
-  overlapColor4: {
-    type: ControlType.Color,
-    title: "4+ Element Overlap Color",
-    defaultValue: "#ff0000",
-  },
-  fontSize: {
-    type: ControlType.Number,
-    title: "Font Size",
-    min: 16,
-    max: 72,
-    step: 4,
-    unit: "px",
-    defaultValue: 32,
-  },
-  movementSpeed: {
-    type: ControlType.Number,
-    title: "Movement Speed",
-    min: 5,
-    max: 50,
-    step: 5,
-    unit: "px",
-    defaultValue: 15,
-  },
-  initialRadius: {
-    type: ControlType.Number,
-    title: "Initial Radius",
-    min: 10,
-    max: 200,
-    step: 5,
-    unit: "px",
-    defaultValue: 40,
-  },
-  minRadius: {
-    type: ControlType.Number,
-    title: "Min Radius",
-    min: 5,
-    max: 100,
-    step: 5,
-    unit: "px",
-    defaultValue: 20,
-  },
-  maxRadius: {
-    type: ControlType.Number,
-    title: "Max Radius",
-    min: 50,
-    max: 300,
-    step: 10,
-    unit: "px",
-    defaultValue: 100,
-  },
-  gravity: {
-    type: ControlType.Number,
-    title: "Gravity",
-    min: 0.1,
-    max: 2,
-    step: 0.1,
-    defaultValue: 0.5,
-  },
-  friction: {
-    type: ControlType.Number,
-    title: "Friction",
-    min: 0.9,
-    max: 1,
-    step: 0.01,
-    defaultValue: 0.98,
-  },
-  bounciness: {
-    type: ControlType.Number,
-    title: "Bounciness",
-    min: 0,
-    max: 1,
-    step: 0.1,
-    defaultValue: 0.7,
-  },
+    backgroundColor: {
+        type: ControlType.Color,
+        title: "Background",
+        defaultValue: "#f0f0f0",
+    },
+    physicsBackgroundColor: {
+        type: ControlType.Color,
+        title: "Physics Background",
+        defaultValue: "#e8f4f8",
+    },
+    circleColor: {
+        type: ControlType.Color,
+        title: "Circle Color",
+        defaultValue: "#3b82f6",
+    },
+    textColor: {
+        type: ControlType.Color,
+        title: "Text Color",
+        defaultValue: "#2563eb",
+    },
+    selectedColor: {
+        type: ControlType.Color,
+        title: "Selected/Hover Color",
+        defaultValue: "#ff00ff",
+    },
+    moveableColor: {
+        type: ControlType.Color,
+        title: "Moveable Color",
+        defaultValue: "#ff0000",
+    },
+    strokeColor: {
+        type: ControlType.Color,
+        title: "Default Stroke Color",
+        defaultValue: "#000000",
+    },
+    strokeWidth: {
+        type: ControlType.Number,
+        title: "Stroke Width",
+        min: 1,
+        max: 10,
+        step: 1,
+        unit: "px",
+        defaultValue: 2,
+    },
+    selectedStrokeWidth: {
+        type: ControlType.Number,
+        title: "Selected Stroke Width",
+        min: 1,
+        max: 10,
+        step: 1,
+        unit: "px",
+        defaultValue: 3,
+    },
+    moveableStrokeWidth: {
+        type: ControlType.Number,
+        title: "Moveable Stroke Width",
+        min: 1,
+        max: 10,
+        step: 1,
+        unit: "px",
+        defaultValue: 4,
+    },
+    overlapColor2: {
+        type: ControlType.Color,
+        title: "2-Element Overlap Color",
+        defaultValue: "#ff6b35",
+    },
+    overlapColor3: {
+        type: ControlType.Color,
+        title: "3-Element Overlap Color",
+        defaultValue: "#ff3535",
+    },
+    overlapColor4: {
+        type: ControlType.Color,
+        title: "4+ Element Overlap Color",
+        defaultValue: "#ff0000",
+    },
+    fontSize: {
+        type: ControlType.Number,
+        title: "Font Size",
+        min: 16,
+        max: 72,
+        step: 4,
+        unit: "px",
+        defaultValue: 32,
+    },
+    movementSpeed: {
+        type: ControlType.Number,
+        title: "Movement Speed",
+        min: 5,
+        max: 50,
+        step: 5,
+        unit: "px",
+        defaultValue: 15,
+    },
+    initialRadius: {
+        type: ControlType.Number,
+        title: "Initial Radius",
+        min: 10,
+        max: 200,
+        step: 5,
+        unit: "px",
+        defaultValue: 40,
+    },
+    minRadius: {
+        type: ControlType.Number,
+        title: "Min Radius",
+        min: 5,
+        max: 100,
+        step: 5,
+        unit: "px",
+        defaultValue: 20,
+    },
+    maxRadius: {
+        type: ControlType.Number,
+        title: "Max Radius",
+        min: 50,
+        max: 300,
+        step: 10,
+        unit: "px",
+        defaultValue: 100,
+    },
+    gravity: {
+        type: ControlType.Number,
+        title: "Gravity",
+        min: 0.1,
+        max: 2,
+        step: 0.1,
+        defaultValue: 0.5,
+    },
+    friction: {
+        type: ControlType.Number,
+        title: "Friction",
+        min: 0.9,
+        max: 1,
+        step: 0.01,
+        defaultValue: 0.98,
+    },
+    bounciness: {
+        type: ControlType.Number,
+        title: "Bounciness",
+        min: 0,
+        max: 1,
+        step: 0.1,
+        defaultValue: 0.7,
+    },
 })
