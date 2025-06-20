@@ -37,6 +37,8 @@ export default function InteractiveCanvas(props) {
     selectedColor = "#ff00ff",
     moveableColor = "#ff0000",
     strokeColor = "#000000",
+    strokeWidth = 2,
+    overlapColor = "#ff6b35",
     minRadius = 20,
     maxRadius = 100,
     initialRadius = 40,
@@ -62,7 +64,8 @@ export default function InteractiveCanvas(props) {
   const [physicsActive, setPhysicsActive] = useState(false)
   const [isCreatingElement, setIsCreatingElement] = useState(false)
   const [creationStart, setCreationStart] = useState<{ x: number; y: number } | null>(null)
-  const [creatingElementId, setCreatingElementId] = useState<string | null>(null)
+  const creatingElementId = useRef<string | null>(null)
+  const [gravityDirection, setGravityDirection] = useState<"down" | "up" | "left" | "right">("down")
 
   // Pinch gesture state
   const [isPinching, setIsPinching] = useState(false)
@@ -116,6 +119,83 @@ export default function InteractiveCanvas(props) {
     }
   }, [])
 
+  // Calculate center of mass for all elements
+  const calculateCenterOfMass = useCallback(() => {
+    if (elements.length === 0) {
+      const canvas = canvasRef.current
+      return { x: canvas?.width / 2 || 400, y: canvas?.height / 2 || 300 }
+    }
+
+    let totalMass = 0
+    let weightedX = 0
+    let weightedY = 0
+
+    elements.forEach((element) => {
+      const mass = element.mass || element.radius / 10
+      totalMass += mass
+      weightedX += element.x * mass
+      weightedY += element.y * mass
+    })
+
+    return {
+      x: weightedX / totalMass,
+      y: weightedY / totalMass,
+    }
+  }, [elements])
+
+  // Check if two circles overlap
+  const circlesOverlap = useCallback((circle1: Element, circle2: Element) => {
+    if (circle1.type !== "circle" || circle2.type !== "circle") return false
+    const dist = distance(circle1.x, circle1.y, circle2.x, circle2.y)
+    return dist < circle1.radius + circle2.radius
+  }, [])
+
+  // Draw circle intersection
+  const drawCircleIntersection = useCallback(
+    (ctx: CanvasRenderingContext2D, circle1: Element, circle2: Element) => {
+      if (!circlesOverlap(circle1, circle2)) return
+
+      const d = distance(circle1.x, circle1.y, circle2.x, circle2.y)
+      const r1 = circle1.radius
+      const r2 = circle2.radius
+
+      // If one circle is completely inside the other
+      if (d <= Math.abs(r1 - r2)) {
+        const smallerCircle = r1 < r2 ? circle1 : circle2
+        ctx.beginPath()
+        ctx.arc(smallerCircle.x, smallerCircle.y, smallerCircle.radius, 0, 2 * Math.PI)
+        ctx.fillStyle = overlapColor
+        ctx.fill()
+        return
+      }
+
+      // Calculate intersection points
+      const a = (r1 * r1 - r2 * r2 + d * d) / (2 * d)
+      const h = Math.sqrt(r1 * r1 - a * a)
+
+      const px = circle1.x + (a * (circle2.x - circle1.x)) / d
+      const py = circle1.y + (a * (circle2.y - circle1.y)) / d
+
+      const p1x = px + (h * (circle2.y - circle1.y)) / d
+      const p1y = py - (h * (circle2.x - circle1.x)) / d
+      const p2x = px - (h * (circle2.y - circle1.y)) / d
+      const p2y = py + (h * (circle2.x - circle1.x)) / d
+
+      // Draw the intersection area using clipping
+      ctx.save()
+      ctx.beginPath()
+      ctx.arc(circle1.x, circle1.y, circle1.radius, 0, 2 * Math.PI)
+      ctx.clip()
+
+      ctx.beginPath()
+      ctx.arc(circle2.x, circle2.y, circle2.radius, 0, 2 * Math.PI)
+      ctx.fillStyle = overlapColor
+      ctx.fill()
+      ctx.restore()
+    },
+    [circlesOverlap, overlapColor],
+  )
+
   // Find element at position
   const findElementAt = useCallback(
     (x: number, y: number): { element: Element; index: number } | null => {
@@ -146,54 +226,99 @@ export default function InteractiveCanvas(props) {
     [elements, getTextDimensions, fontSize],
   )
 
-  // Find the most empty area on canvas
-  const findMostEmptyArea = useCallback(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return { x: canvas?.width / 2 || 400, y: canvas?.height / 2 || 300 }
+  // Find the most empty area on canvas with balanced placement
+  const findMostEmptyArea = useCallback(
+    (newElementRadius: number = initialRadius) => {
+      const canvas = canvasRef.current
+      if (!canvas) return { x: canvas?.width / 2 || 400, y: canvas?.height / 2 || 300 }
 
-    const gridSize = 50
-    const cols = Math.ceil(canvas.width / gridSize)
-    const rows = Math.ceil(canvas.height / gridSize)
+      const canvasCenter = { x: canvas.width / 2, y: canvas.height / 2 }
+      const currentCenterOfMass = calculateCenterOfMass()
 
-    let bestScore = Number.POSITIVE_INFINITY
-    let bestX = canvas.width / 2
-    let bestY = canvas.height / 2
+      const gridSize = Math.max(40, newElementRadius * 1.5)
+      const rect = canvas.getBoundingClientRect()
+      const logicalWidth = rect.width
+      const logicalHeight = rect.height
+      const cols = Math.floor(logicalWidth / gridSize)
+      const rows = Math.floor(logicalHeight / gridSize)
 
-    // Check each grid cell
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < cols; col++) {
-        const centerX = (col + 0.5) * gridSize
-        const centerY = (row + 0.5) * gridSize
+      let bestScore = Number.POSITIVE_INFINITY
+      let bestX = canvasCenter.x
+      let bestY = canvasCenter.y
 
-        // Skip if too close to edges
-        if (
-          centerX < initialRadius ||
-          centerX > canvas.width - initialRadius ||
-          centerY < initialRadius ||
-          centerY > canvas.height - initialRadius
-        ) {
-          continue
-        }
+      // Check each grid cell
+      for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+          const centerX = col * gridSize + gridSize / 2
+          const centerY = row * gridSize + gridSize / 2
 
-        // Count overlapping elements
-        let score = 0
-        elements.forEach((element) => {
-          const dist = distance(centerX, centerY, element.x, element.y)
-          if (dist < element.radius + initialRadius + 20) {
-            score += element.radius + initialRadius + 20 - dist
+          // Skip if too close to edges
+          const margin = newElementRadius + 15
+          if (
+            centerX < margin ||
+            centerX > logicalWidth - margin ||
+            centerY < margin ||
+            centerY > logicalHeight - margin
+          ) {
+            continue
           }
-        })
 
-        if (score < bestScore) {
-          bestScore = score
-          bestX = centerX
-          bestY = centerY
+          // Calculate overlap penalty with much higher weight
+          let overlapPenalty = 0
+          elements.forEach((element) => {
+            const dist = distance(centerX, centerY, element.x, element.y)
+            const minDistance = element.radius + newElementRadius + 20
+            if (dist < minDistance) {
+              overlapPenalty += Math.pow(minDistance - dist, 2) * 100 // Exponential penalty
+            }
+          })
+
+          // Skip positions with any overlap
+          if (overlapPenalty > 0) {
+            continue
+          }
+
+          // Calculate balance score
+          const newMass = newElementRadius / 10
+          const totalMass = elements.reduce((sum, el) => sum + (el.mass || el.radius / 10), 0) + newMass
+
+          if (totalMass > 0) {
+            const currentTotalMass = totalMass - newMass
+            const newCenterOfMass = {
+              x:
+                currentTotalMass > 0
+                  ? (currentCenterOfMass.x * currentTotalMass + centerX * newMass) / totalMass
+                  : centerX,
+              y:
+                currentTotalMass > 0
+                  ? (currentCenterOfMass.y * currentTotalMass + centerY * newMass) / totalMass
+                  : centerY,
+            }
+
+            const currentDistanceFromCenter = distance(
+              currentCenterOfMass.x,
+              currentCenterOfMass.y,
+              canvasCenter.x,
+              canvasCenter.y,
+            )
+            const newDistanceFromCenter = distance(newCenterOfMass.x, newCenterOfMass.y, canvasCenter.x, canvasCenter.y)
+            const balanceBonus = Math.max(0, (currentDistanceFromCenter - newDistanceFromCenter) * 3)
+
+            const totalScore = -balanceBonus + Math.random() * 10 // Add small random factor for variety
+
+            if (totalScore < bestScore) {
+              bestScore = totalScore
+              bestX = centerX
+              bestY = centerY
+            }
+          }
         }
       }
-    }
 
-    return { x: bestX, y: bestY }
-  }, [elements, initialRadius])
+      return { x: bestX, y: bestY }
+    },
+    [elements, initialRadius, calculateCenterOfMass],
+  )
 
   // Get canvas coordinates from event
   const getCanvasCoordinates = (e: MouseEvent | TouchEvent) => {
@@ -209,6 +334,7 @@ export default function InteractiveCanvas(props) {
       clientY = e.touches[0]?.clientY || e.changedTouches[0]?.clientY || 0
     }
 
+    // Account for high-DPI scaling
     return {
       x: clientX - rect.left,
       y: clientY - rect.top,
@@ -315,6 +441,45 @@ export default function InteractiveCanvas(props) {
     }
   }, [keyboardMode])
 
+  // Handle wheel/trackpad zoom
+  const handleWheel = useCallback(
+    (e: WheelEvent) => {
+      e.preventDefault()
+
+      const { x, y } = getCanvasCoordinates(e as any)
+      const result = findElementAt(x, y)
+
+      if (result) {
+        const { element, index } = result
+        const scaleFactor = e.deltaY > 0 ? 0.9 : 1.1
+
+        if (element.type === "circle") {
+          const newRadius = Math.max(minRadius, Math.min(maxRadius, element.radius * scaleFactor))
+          setLastUsedRadius(newRadius)
+
+          setElements((prev) =>
+            prev.map((el, idx) => (idx === index ? { ...el, radius: newRadius, mass: newRadius / 10 } : el)),
+          )
+        } else if (element.type === "text") {
+          const newFontSize = Math.max(16, Math.min(72, (element.fontSize || fontSize) * scaleFactor))
+          const newRadius = Math.max(newFontSize / 2, 20)
+
+          setElements((prev) =>
+            prev.map((el, idx) =>
+              idx === index ? { ...el, fontSize: newFontSize, radius: newRadius, mass: newRadius / 10 } : el,
+            ),
+          )
+        }
+
+        // Make the element moveable when scaling
+        setMoveableElementIndex(index)
+        setSelectedElementIndex(-1)
+        setPhysicsActive(false)
+      }
+    },
+    [findElementAt, minRadius, maxRadius, fontSize, lastUsedRadius],
+  )
+
   // Physics simulation
   const updatePhysics = useCallback(() => {
     const canvas = canvasRef.current
@@ -331,8 +496,21 @@ export default function InteractiveCanvas(props) {
         // Skip physics for moveable elements
         if (element.state === "moveable") continue
 
-        // Apply gravity
-        element.vy += gravity
+        // Apply gravity based on direction
+        switch (gravityDirection) {
+          case "down":
+            element.vy += gravity
+            break
+          case "up":
+            element.vy -= gravity
+            break
+          case "left":
+            element.vx -= gravity
+            break
+          case "right":
+            element.vx += gravity
+            break
+        }
 
         // Apply friction
         element.vx *= friction
@@ -342,25 +520,64 @@ export default function InteractiveCanvas(props) {
         element.x += element.vx
         element.y += element.vy
 
-        // Check boundaries
-        if (element.y + element.radius > canvas.height) {
+        const rect = canvas.getBoundingClientRect()
+        const logicalWidth = rect.width
+        const logicalHeight = rect.height
+
+        // Check boundaries based on gravity direction
+        if (gravityDirection === "down" && element.y + element.radius > logicalHeight) {
           if (isClearing) {
-            // During clearing, let elements fall through the floor
             continue
           } else {
-            element.y = canvas.height - element.radius
+            element.y = logicalHeight - element.radius
             element.vy *= -bounciness
             if (Math.abs(element.vy) < 0.5) element.vy = 0
           }
+        } else if (gravityDirection === "up" && element.y - element.radius < 0) {
+          if (isClearing) {
+            continue
+          } else {
+            element.y = element.radius
+            element.vy *= -bounciness
+            if (Math.abs(element.vy) < 0.5) element.vy = 0
+          }
+        } else if (gravityDirection === "left" && element.x - element.radius < 0) {
+          if (isClearing) {
+            continue
+          } else {
+            element.x = element.radius
+            element.vx *= -bounciness
+            if (Math.abs(element.vx) < 0.5) element.vx = 0
+          }
+        } else if (gravityDirection === "right" && element.x + element.radius > logicalWidth) {
+          if (isClearing) {
+            continue
+          } else {
+            element.x = logicalWidth - element.radius
+            element.vx *= -bounciness
+            if (Math.abs(element.vx) < 0.5) element.vx = 0
+          }
         }
 
-        if (element.x - element.radius < 0) {
-          element.x = element.radius
-          element.vx *= -bounciness
-        }
-        if (element.x + element.radius > canvas.width) {
-          element.x = canvas.width - element.radius
-          element.vx *= -bounciness
+        // Handle perpendicular boundaries
+        if (gravityDirection === "down" || gravityDirection === "up") {
+          if (element.x - element.radius < 0) {
+            element.x = element.radius
+            element.vx *= -bounciness
+          }
+          if (element.x + element.radius > logicalWidth) {
+            element.x = logicalWidth - element.radius
+            element.vx *= -bounciness
+          }
+        } else {
+          if (element.y - element.radius < 0) {
+            element.y = element.radius
+            element.vy *= -bounciness
+          }
+          if (element.y + element.radius > logicalHeight) {
+            element.y = logicalHeight - element.radius
+            element.vy *= -bounciness
+          }
         }
 
         if (Math.abs(element.vx) > 0.1 || Math.abs(element.vy) > 0.1) {
@@ -420,7 +637,7 @@ export default function InteractiveCanvas(props) {
 
       return newElements
     })
-  }, [physicsActive, gravity, friction, bounciness, isClearing])
+  }, [physicsActive, gravity, friction, bounciness, isClearing, gravityDirection])
 
   // Physics animation loop
   useEffect(() => {
@@ -449,7 +666,9 @@ export default function InteractiveCanvas(props) {
       const canvas = canvasRef.current
       if (!canvas) return
 
-      const allElementsFallen = elements.every((element) => element.y - element.radius > canvas.height)
+      const rect = canvas.getBoundingClientRect()
+      const logicalHeight = rect.height
+      const allElementsFallen = elements.every((element) => element.y - element.radius > logicalHeight)
 
       if (allElementsFallen) {
         // All elements have fallen off screen
@@ -467,6 +686,45 @@ export default function InteractiveCanvas(props) {
     }
   }, [elements, isClearing, wasPhysicsActiveBeforeClearing])
 
+  // Split text elements into individual characters for physics
+  const splitWordsIntoCharacters = useCallback(() => {
+    setElements((prev) => {
+      const newElements: Element[] = []
+
+      prev.forEach((element) => {
+        if (element.type === "text" && element.text && element.text.length > 1) {
+          // Split multi-character text into individual characters
+          const chars = element.text.split("")
+          const charSpacing = (element.fontSize || fontSize) * 0.6
+          const startX = element.x - ((chars.length - 1) * charSpacing) / 2
+
+          chars.forEach((char, index) => {
+            const charElement: Element = {
+              ...element,
+              id: generateId(),
+              x: startX + index * charSpacing,
+              text: char,
+              vx: (Math.random() - 0.5) * 2,
+              vy: Math.random() * -2,
+              mass: (element.fontSize || fontSize) / 20,
+            }
+            newElements.push(charElement)
+          })
+        } else {
+          // Keep circles and single characters as-is, but add physics properties
+          newElements.push({
+            ...element,
+            vx: (Math.random() - 0.5) * 2,
+            vy: Math.random() * -2,
+            mass: element.radius / 10,
+          })
+        }
+      })
+
+      return newElements
+    })
+  }, [fontSize])
+
   // Handle keyboard events
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -478,15 +736,22 @@ export default function InteractiveCanvas(props) {
         clearTimeout(mouseInteractionTimeoutRef.current)
       }
 
-      const moveableElement = getMoveableElement()
+      const moveableElementIndexLocal = moveableElementIndex
+      const moveableElement = moveableElementIndexLocal >= 0 ? elements[moveableElementIndexLocal] : null
+
+      const rect = canvas.getBoundingClientRect()
+      const logicalWidth = rect.width
+      const logicalHeight = rect.height
 
       switch (e.key) {
         case "ArrowUp":
           e.preventDefault()
-          if (moveableElement) {
+          if (physicsActive) {
+            setGravityDirection("up")
+          } else if (moveableElement) {
             setElements((prev) =>
               prev.map((element, index) =>
-                index === moveableElementIndex
+                index === moveableElementIndexLocal
                   ? { ...element, y: Math.max(element.radius, element.y - movementSpeed) }
                   : element,
               ),
@@ -505,11 +770,13 @@ export default function InteractiveCanvas(props) {
 
         case "ArrowDown":
           e.preventDefault()
-          if (moveableElement) {
+          if (physicsActive) {
+            setGravityDirection("down")
+          } else if (moveableElement) {
             setElements((prev) =>
               prev.map((element, index) =>
-                index === moveableElementIndex
-                  ? { ...element, y: Math.min(canvas.height - element.radius, element.y + movementSpeed) }
+                index === moveableElementIndexLocal
+                  ? { ...element, y: Math.min(logicalHeight - element.radius, element.y + movementSpeed) }
                   : element,
               ),
             )
@@ -527,10 +794,12 @@ export default function InteractiveCanvas(props) {
 
         case "ArrowLeft":
           e.preventDefault()
-          if (moveableElement) {
+          if (physicsActive) {
+            setGravityDirection("left")
+          } else if (moveableElement) {
             setElements((prev) =>
               prev.map((element, index) =>
-                index === moveableElementIndex
+                index === moveableElementIndexLocal
                   ? { ...element, x: Math.max(element.radius, element.x - movementSpeed) }
                   : element,
               ),
@@ -549,11 +818,13 @@ export default function InteractiveCanvas(props) {
 
         case "ArrowRight":
           e.preventDefault()
-          if (moveableElement) {
+          if (physicsActive) {
+            setGravityDirection("right")
+          } else if (moveableElement) {
             setElements((prev) =>
               prev.map((element, index) =>
-                index === moveableElementIndex
-                  ? { ...element, x: Math.min(canvas.width - element.radius, element.x + movementSpeed) }
+                index === moveableElementIndexLocal
+                  ? { ...element, x: Math.min(logicalWidth - element.radius, element.x + movementSpeed) }
                   : element,
               ),
             )
@@ -571,7 +842,7 @@ export default function InteractiveCanvas(props) {
 
         case " ": // Space key - toggle moveable state
           e.preventDefault()
-          if (moveableElementIndex >= 0) {
+          if (moveableElementIndexLocal >= 0) {
             // Stop moving
             setMoveableElementIndex(-1)
           } else if (selectedElementIndex >= 0) {
@@ -588,15 +859,8 @@ export default function InteractiveCanvas(props) {
             if (physicsActive) {
               setPhysicsActive(false)
             } else {
-              // Reset physics properties and start gravity
-              setElements((prev) =>
-                prev.map((element) => ({
-                  ...element,
-                  vx: (Math.random() - 0.5) * 2,
-                  vy: Math.random() * -2,
-                  mass: element.radius / 10,
-                })),
-              )
+              // Split words into characters and start gravity
+              splitWordsIntoCharacters()
               setPhysicsActive(true)
             }
           }
@@ -619,26 +883,49 @@ export default function InteractiveCanvas(props) {
             Math.min(maxRadius, minRadius + (numberValue - 1) * ((maxRadius - minRadius) / 9)),
           )
 
-          // Remember this radius for future use
-          setLastUsedRadius(newRadius)
+          // Check if we have a selected or moveable element to resize
+          const targetElement = moveableElement || getSelectedElement()
+          if (targetElement) {
+            // Resize existing element
+            setLastUsedRadius(newRadius)
+            const targetIndex = moveableElementIndexLocal >= 0 ? moveableElementIndexLocal : selectedElementIndex
 
-          const emptyArea = findMostEmptyArea()
-          const newElementId = generateId()
-          const newElement: Element = {
-            id: newElementId,
-            x: emptyArea.x,
-            y: emptyArea.y,
-            radius: newRadius,
-            color: circleColor,
-            type: "circle",
-            state: "moveable",
-            vx: 0,
-            vy: 0,
-            mass: newRadius / 10,
+            setElements((prev) =>
+              prev.map((element, index) => {
+                if (index === targetIndex) {
+                  if (element.type === "circle") {
+                    return { ...element, radius: newRadius, mass: newRadius / 10 }
+                  } else if (element.type === "text") {
+                    const newFontSize = Math.max(16, Math.min(72, 16 + (numberValue - 1) * 6))
+                    const textRadius = Math.max(newFontSize / 2, 20)
+                    return { ...element, fontSize: newFontSize, radius: textRadius, mass: textRadius / 10 }
+                  }
+                }
+                return element
+              }),
+            )
+          } else {
+            // Create new circle with balanced placement - set to default state
+            setLastUsedRadius(newRadius)
+            const emptyArea = findMostEmptyArea(newRadius)
+            const newElementId = generateId()
+            const newElement: Element = {
+              id: newElementId,
+              x: emptyArea.x,
+              y: emptyArea.y,
+              radius: newRadius,
+              color: circleColor,
+              type: "circle",
+              state: "default", // Changed from "moveable" to "default"
+              vx: 0,
+              vy: 0,
+              mass: newRadius / 10,
+            }
+            setElements((prev) => [...prev, newElement])
+            // Don't set as moveable anymore
+            setSelectedElementIndex(-1)
+            setMoveableElementIndex(-1)
           }
-          setElements((prev) => [...prev, newElement])
-          setMoveableElementIndex(elements.length)
-          setSelectedElementIndex(-1)
           break
 
         case "Escape":
@@ -667,32 +954,66 @@ export default function InteractiveCanvas(props) {
           }
           break
 
+        case "Backspace":
+          e.preventDefault()
+          // Check if we have a moveable text element to remove characters from
+          const moveableElementLocal = moveableElement
+          if (moveableElementLocal && moveableElementLocal.type === "text" && moveableElementLocal.text) {
+            if (moveableElementLocal.text.length > 1) {
+              // Remove last character
+              setElements((prev) =>
+                prev.map((element, index) =>
+                  index === moveableElementIndexLocal ? { ...element, text: element.text!.slice(0, -1) } : element,
+                ),
+              )
+            } else {
+              // If only one character left, remove the entire element
+              setElements((prev) => prev.filter((_, index) => index !== moveableElementIndexLocal))
+              setMoveableElementIndex(-1)
+              setSelectedElementIndex(-1)
+            }
+          }
+          break
+
         default:
           // Handle letter keys
           if (e.key.length === 1 && e.key.match(/[a-zA-Z]/)) {
             e.preventDefault()
             const letter = e.key.toLowerCase()
-            const emptyArea = findMostEmptyArea()
-            const newElementId = generateId()
-            const textRadius = Math.max(fontSize / 2, 20) // Use font size to determine collision radius
 
-            const newElement: Element = {
-              id: newElementId,
-              x: emptyArea.x,
-              y: emptyArea.y,
-              radius: textRadius,
-              color: textColor,
-              type: "text",
-              text: letter,
-              fontSize: fontSize,
-              state: "moveable",
-              vx: 0,
-              vy: 0,
-              mass: textRadius / 10,
+            // Check if we have a moveable text element to append to
+            const moveableElementLocal = moveableElement
+            if (moveableElementLocal && moveableElementLocal.type === "text") {
+              // Append to existing text element
+              setElements((prev) =>
+                prev.map((element, index) =>
+                  index === moveableElementIndexLocal ? { ...element, text: (element.text || "") + letter } : element,
+                ),
+              )
+            } else {
+              // Create new text element with balanced placement - set to moveable for text editing
+              const textRadius = Math.max(fontSize / 2, 20)
+              const emptyArea = findMostEmptyArea(textRadius)
+              const newElementId = generateId()
+
+              const newElement: Element = {
+                id: newElementId,
+                x: emptyArea.x,
+                y: emptyArea.y,
+                radius: textRadius,
+                color: textColor,
+                type: "text",
+                text: letter,
+                fontSize: fontSize,
+                state: "moveable", // Keep moveable for text editing
+                vx: 0,
+                vy: 0,
+                mass: textRadius / 10,
+              }
+              setElements((prev) => [...prev, newElement])
+              setMoveableElementIndex(elements.length)
+              setSelectedElementIndex(-1)
             }
-            setElements((prev) => [...prev, newElement])
-            setMoveableElementIndex(elements.length)
-            setSelectedElementIndex(-1)
           }
           break
       }
@@ -709,11 +1030,11 @@ export default function InteractiveCanvas(props) {
       maxRadius,
       physicsActive,
       getSelectedElement,
-      getMoveableElement,
       findNearestElementInDirection,
       findMostEmptyArea,
       lastUsedRadius,
       fontSize,
+      splitWordsIntoCharacters,
     ],
   )
 
@@ -744,9 +1065,14 @@ export default function InteractiveCanvas(props) {
     const ctx = canvas.getContext("2d")
     if (!ctx) return
 
+    // Use logical dimensions (CSS size) for drawing calculations
+    const rect = canvas.getBoundingClientRect()
+    const logicalWidth = rect.width
+    const logicalHeight = rect.height
+
     // Clear canvas with dynamic background
     ctx.fillStyle = physicsActive ? physicsBackgroundColor : backgroundColor
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.fillRect(0, 0, logicalWidth, logicalHeight)
 
     // Draw elements
     elements.forEach((element) => {
@@ -760,20 +1086,20 @@ export default function InteractiveCanvas(props) {
 
         // Stroke based on state
         let strokeColorToUse = strokeColor
-        let lineWidth = 1
+        let lineWidth = strokeWidth
 
         switch (element.state) {
           case "selected":
             strokeColorToUse = selectedColor
-            lineWidth = 2
+            lineWidth = strokeWidth + 1
             break
           case "moveable":
             strokeColorToUse = moveableColor
-            lineWidth = 3
+            lineWidth = strokeWidth + 2
             break
           default:
             strokeColorToUse = strokeColor
-            lineWidth = 1
+            lineWidth = strokeWidth
         }
 
         ctx.strokeStyle = strokeColorToUse
@@ -811,20 +1137,20 @@ export default function InteractiveCanvas(props) {
 
         // Draw outline based on state
         let strokeColorToUse = strokeColor
-        let lineWidth = 1
+        let lineWidth = strokeWidth
 
         switch (element.state) {
           case "selected":
             strokeColorToUse = selectedColor
-            lineWidth = 2
+            lineWidth = strokeWidth + 1
             break
           case "moveable":
             strokeColorToUse = moveableColor
-            lineWidth = 3
+            lineWidth = strokeWidth + 2
             break
           default:
             strokeColorToUse = strokeColor
-            lineWidth = 1
+            lineWidth = strokeWidth
         }
 
         if (element.state !== "default") {
@@ -864,16 +1190,26 @@ export default function InteractiveCanvas(props) {
         }
       }
     })
+
+    // Draw overlapping areas for circles
+    const circleElements = elements.filter((el) => el.type === "circle")
+    for (let i = 0; i < circleElements.length; i++) {
+      for (let j = i + 1; j < circleElements.length; j++) {
+        drawCircleIntersection(ctx, circleElements[i], circleElements[j])
+      }
+    }
   }, [
     elements,
     backgroundColor,
     physicsBackgroundColor,
     strokeColor,
+    strokeWidth,
     selectedColor,
     moveableColor,
     physicsActive,
     fontSize,
     getTextDimensions,
+    drawCircleIntersection,
   ])
 
   // Handle mouse down
@@ -918,7 +1254,7 @@ export default function InteractiveCanvas(props) {
         setElements((prev) => [...prev, newElement])
         setIsCreatingElement(true)
         setCreationStart({ x, y })
-        setCreatingElementId(newElementId)
+        creatingElementId.current = newElementId
       }
     },
     [findElementAt, handleMouseInteraction, circleColor],
@@ -929,14 +1265,16 @@ export default function InteractiveCanvas(props) {
     (e: MouseEvent) => {
       const { x, y } = getCanvasCoordinates(e)
 
-      if (isCreatingElement && creationStart && creatingElementId) {
+      if (isCreatingElement && creationStart && creatingElementId.current) {
         // Update radius of circle being created
         const dragDistance = distance(creationStart.x, creationStart.y, x, y)
         const newRadius = Math.max(minRadius, Math.min(maxRadius, dragDistance))
 
         setElements((prev) =>
           prev.map((element) =>
-            element.id === creatingElementId ? { ...element, radius: newRadius, mass: newRadius / 10 } : element,
+            element.id === creatingElementId.current
+              ? { ...element, radius: newRadius, mass: newRadius / 10 }
+              : element,
           ),
         )
       } else if (moveableElementIndex >= 0 && e.buttons === 1) {
@@ -944,15 +1282,19 @@ export default function InteractiveCanvas(props) {
         const canvas = canvasRef.current
         if (!canvas) return
 
-        const moveableElement = getMoveableElement()
+        const rect = canvas.getBoundingClientRect()
+        const logicalWidth = rect.width
+        const logicalHeight = rect.height
+
+        const moveableElement = elements[moveableElementIndex]
         if (moveableElement) {
           const newX = Math.max(
             moveableElement.radius,
-            Math.min(canvas.width - moveableElement.radius, x - dragOffset.x),
+            Math.min(logicalWidth - moveableElement.radius, x - dragOffset.x),
           )
           const newY = Math.max(
             moveableElement.radius,
-            Math.min(canvas.height - moveableElement.radius, y - dragOffset.y),
+            Math.min(logicalHeight - moveableElement.radius, y - dragOffset.y),
           )
 
           setElements((prev) =>
@@ -971,24 +1313,29 @@ export default function InteractiveCanvas(props) {
       dragOffset,
       findElementAt,
       handleMouseInteraction,
-      getMoveableElement,
       isCreatingElement,
       creationStart,
       creatingElementId,
       minRadius,
       maxRadius,
+      elements,
     ],
   )
 
   // Handle mouse up
   const handleMouseUp = useCallback(() => {
-    if (isCreatingElement && creatingElementId) {
+    if (isCreatingElement && creatingElementId.current) {
       // Finish creating element
       setIsCreatingElement(false)
       setCreationStart(null)
-      setCreatingElementId(null)
+      creatingElementId.current = null
     }
-  }, [isCreatingElement, creatingElementId])
+
+    // Reset moveable element when mouse is released
+    if (moveableElementIndex >= 0) {
+      setMoveableElementIndex(-1)
+    }
+  }, [isCreatingElement, creatingElementId, moveableElementIndex])
 
   // Handle touch start
   const handleTouchStart = useCallback(
@@ -1050,7 +1397,7 @@ export default function InteractiveCanvas(props) {
           setElements((prev) => [...prev, newElement])
           setIsCreatingElement(true)
           setCreationStart({ x, y })
-          setCreatingElementId(newElementId)
+          creatingElementId.current = newElementId
         }
       }
     },
@@ -1068,42 +1415,61 @@ export default function InteractiveCanvas(props) {
         const touch2 = e.touches[1]
         const currentDistance = getTouchDistance(touch1, touch2)
         const scale = currentDistance / pinchStartDistance
-        const newRadius = Math.max(minRadius, Math.min(maxRadius, pinchStartRadius * scale))
 
-        // Remember this radius for future use
-        setLastUsedRadius(newRadius)
+        const element = elements[pinchElementIndex]
+        if (element.type === "circle") {
+          const newRadius = Math.max(minRadius, Math.min(maxRadius, pinchStartRadius * scale))
+          setLastUsedRadius(newRadius)
 
-        setElements((prev) =>
-          prev.map((element, index) =>
-            index === pinchElementIndex ? { ...element, radius: newRadius, mass: newRadius / 10 } : element,
-          ),
-        )
+          setElements((prev) =>
+            prev.map((el, index) =>
+              index === pinchElementIndex ? { ...el, radius: newRadius, mass: newRadius / 10 } : el,
+            ),
+          )
+        } else if (element.type === "text") {
+          const newFontSize = Math.max(16, Math.min(72, (element.fontSize || fontSize) * scale))
+          const newRadius = Math.max(newFontSize / 2, 20)
+
+          setElements((prev) =>
+            prev.map((el, index) =>
+              index === pinchElementIndex
+                ? { ...el, fontSize: newFontSize, radius: newRadius, mass: newRadius / 10 }
+                : el,
+            ),
+          )
+        }
       } else if (e.touches.length === 1) {
         // Single finger - treat like mouse move
         const { x, y } = getCanvasCoordinates(e)
 
-        if (isCreatingElement && creationStart && creatingElementId) {
+        if (isCreatingElement && creationStart && creatingElementId.current) {
           const dragDistance = distance(creationStart.x, creationStart.y, x, y)
           const newRadius = Math.max(minRadius, Math.min(maxRadius, dragDistance))
 
           setElements((prev) =>
             prev.map((element) =>
-              element.id === creatingElementId ? { ...element, radius: newRadius, mass: newRadius / 10 } : element,
+              element.id === creatingElementId.current
+                ? { ...element, radius: newRadius, mass: newRadius / 10 }
+                : element,
             ),
           )
         } else if (moveableElementIndex >= 0) {
           const canvas = canvasRef.current
           if (!canvas) return
 
-          const moveableElement = getMoveableElement()
+          const rect = canvas.getBoundingClientRect()
+          const logicalWidth = rect.width
+          const logicalHeight = rect.height
+
+          const moveableElement = elements[moveableElementIndex]
           if (moveableElement) {
             const newX = Math.max(
               moveableElement.radius,
-              Math.min(canvas.width - moveableElement.radius, x - dragOffset.x),
+              Math.min(logicalWidth - moveableElement.radius, x - dragOffset.x),
             )
             const newY = Math.max(
               moveableElement.radius,
-              Math.min(canvas.height - moveableElement.radius, y - dragOffset.y),
+              Math.min(logicalHeight - moveableElement.radius, y - dragOffset.y),
             )
 
             setElements((prev) =>
@@ -1127,8 +1493,9 @@ export default function InteractiveCanvas(props) {
       creatingElementId,
       moveableElementIndex,
       dragOffset,
-      getMoveableElement,
       lastUsedRadius,
+      fontSize,
+      elements,
     ],
   )
 
@@ -1144,10 +1511,10 @@ export default function InteractiveCanvas(props) {
         setPinchElementIndex(-1)
       }
 
-      if (isCreatingElement && creatingElementId && e.touches.length === 0) {
+      if (isCreatingElement && creatingElementId.current && e.touches.length === 0) {
         setIsCreatingElement(false)
         setCreationStart(null)
-        setCreatingElementId(null)
+        creatingElementId.current = null
       }
     },
     [isPinching, isCreatingElement, creatingElementId],
@@ -1167,8 +1534,22 @@ export default function InteractiveCanvas(props) {
 
     const resizeCanvas = () => {
       const rect = container.getBoundingClientRect()
-      canvas.width = rect.width
-      canvas.height = rect.height
+      const dpr = window.devicePixelRatio || 1
+
+      // Set actual canvas size in memory (scaled for high-DPI)
+      canvas.width = rect.width * dpr
+      canvas.height = rect.height * dpr
+
+      // Scale the canvas back down using CSS
+      canvas.style.width = rect.width + "px"
+      canvas.style.height = rect.height + "px"
+
+      // Scale the drawing context so everything draws at the correct size
+      const ctx = canvas.getContext("2d")
+      if (ctx) {
+        ctx.scale(dpr, dpr)
+      }
+
       draw()
     }
 
@@ -1183,6 +1564,7 @@ export default function InteractiveCanvas(props) {
     canvas.addEventListener("mouseleave", () => {
       setHoverElementId(null)
     })
+    canvas.addEventListener("wheel", handleWheel, { passive: false })
 
     container.addEventListener("keydown", handleKeyDown)
     container.focus()
@@ -1199,6 +1581,7 @@ export default function InteractiveCanvas(props) {
       canvas.removeEventListener("mouseleave", () => {
         setHoverElementId(null)
       })
+      canvas.removeEventListener("wheel", handleWheel)
       container.removeEventListener("keydown", handleKeyDown)
       window.removeEventListener("resize", resizeCanvas)
 
@@ -1215,6 +1598,7 @@ export default function InteractiveCanvas(props) {
     handleTouchEnd,
     handleKeyDown,
     draw,
+    handleWheel,
   ])
 
   // Redraw when elements change
@@ -1290,10 +1674,10 @@ export default function InteractiveCanvas(props) {
       >
         <div>🎮 Controls:</div>
         <div>1-9,0 = Circles • A-Z = Letters • ↑↓←→ Select/Move • Space = Toggle Move</div>
-        <div>Enter = Gravity • ESC = Clear • Click & Drag = Create/Move • Pinch = Resize</div>
+        <div>Enter = Gravity • ESC = Clear • Click & Drag = Create/Move • Pinch/Wheel = Resize</div>
         {selectedElementIndex >= 0 && keyboardMode && <div>📍 Selected: Element {selectedElementIndex + 1}</div>}
         {moveableElementIndex >= 0 && <div>🎯 Moving: Element {moveableElementIndex + 1}</div>}
-        {physicsActive && <div>🌍 Gravity Active</div>}
+        {physicsActive && <div>🌍 Gravity: {gravityDirection.toUpperCase()} (use arrow keys to change)</div>}
       </div>
     </motion.div>
   )
@@ -1335,6 +1719,20 @@ addPropertyControls(InteractiveCanvas, {
     type: ControlType.Color,
     title: "Default Stroke Color",
     defaultValue: "#000000",
+  },
+  strokeWidth: {
+    type: ControlType.Number,
+    title: "Stroke Width",
+    min: 1,
+    max: 10,
+    step: 1,
+    unit: "px",
+    defaultValue: 2,
+  },
+  overlapColor: {
+    type: ControlType.Color,
+    title: "Overlap Color",
+    defaultValue: "#ff6b35",
   },
   fontSize: {
     type: ControlType.Number,
