@@ -65,6 +65,10 @@ export default function InteractiveCanvas(props) {
   const [pinchStartRadius, setPinchStartRadius] = useState(0)
   const [pinchCircleIndex, setPinchCircleIndex] = useState(-1)
 
+  const [isClearing, setIsClearing] = useState(false)
+  const [wasPhysicsActiveBeforeClearing, setWasPhysicsActiveBeforeClearing] = useState(false)
+  const [lastUsedRadius, setLastUsedRadius] = useState(initialRadius)
+
   // Generate unique ID for circles
   const generateId = () => Math.random().toString(36).substr(2, 9)
 
@@ -303,9 +307,14 @@ export default function InteractiveCanvas(props) {
 
         // Check boundaries
         if (circle.y + circle.radius > canvas.height) {
-          circle.y = canvas.height - circle.radius
-          circle.vy *= -bounciness
-          if (Math.abs(circle.vy) < 0.5) circle.vy = 0
+          if (isClearing) {
+            // During clearing, let circles fall through the floor
+            continue
+          } else {
+            circle.y = canvas.height - circle.radius
+            circle.vy *= -bounciness
+            if (Math.abs(circle.vy) < 0.5) circle.vy = 0
+          }
         }
 
         if (circle.x - circle.radius < 0) {
@@ -374,7 +383,7 @@ export default function InteractiveCanvas(props) {
 
       return newCircles
     })
-  }, [physicsActive, gravity, friction, bounciness])
+  }, [physicsActive, gravity, friction, bounciness, isClearing])
 
   // Physics animation loop
   useEffect(() => {
@@ -396,6 +405,30 @@ export default function InteractiveCanvas(props) {
       }
     }
   }, [physicsActive, updatePhysics])
+
+  // Check if clearing is complete
+  useEffect(() => {
+    if (isClearing && circles.length > 0) {
+      const canvas = canvasRef.current
+      if (!canvas) return
+
+      const allCirclesFallen = circles.every((circle) => circle.y - circle.radius > canvas.height)
+
+      if (allCirclesFallen) {
+        // All circles have fallen off screen
+        setCircles([])
+        setIsClearing(false)
+        setSelectedCircleIndex(-1)
+        setMoveableCircleIndex(-1)
+        setHoverCircleId(null)
+
+        // Restore physics state
+        if (!wasPhysicsActiveBeforeClearing) {
+          setPhysicsActive(false)
+        }
+      }
+    }
+  }, [circles, isClearing, wasPhysicsActiveBeforeClearing])
 
   // Handle keyboard events
   const handleKeyDown = useCallback(
@@ -541,12 +574,12 @@ export default function InteractiveCanvas(props) {
             id: newCircleId,
             x: emptyArea.x,
             y: emptyArea.y,
-            radius: initialRadius,
+            radius: lastUsedRadius,
             color: circleColor,
             state: "moveable",
             vx: 0,
             vy: 0,
-            mass: initialRadius / 10,
+            mass: lastUsedRadius / 10,
           }
           setCircles((prev) => [...prev, newCircle])
           setMoveableCircleIndex(circles.length)
@@ -572,12 +605,41 @@ export default function InteractiveCanvas(props) {
               Math.min(maxRadius, minRadius + (numberValue - 1) * ((maxRadius - minRadius) / 9)),
             )
 
+            // Remember this radius for future use
+            setLastUsedRadius(newRadius)
+
             const targetIndex = moveableCircleIndex >= 0 ? moveableCircleIndex : selectedCircleIndex
             setCircles((prev) =>
               prev.map((circle, index) =>
                 index === targetIndex ? { ...circle, radius: newRadius, mass: newRadius / 10 } : circle,
               ),
             )
+          }
+          break
+
+        case "Escape":
+          e.preventDefault()
+          if (circles.length > 0) {
+            // Start clearing process
+            setIsClearing(true)
+            setWasPhysicsActiveBeforeClearing(physicsActive)
+
+            if (!physicsActive) {
+              // Turn on physics if it wasn't already on
+              setCircles((prev) =>
+                prev.map((circle) => ({
+                  ...circle,
+                  vx: (Math.random() - 0.5) * 2,
+                  vy: Math.random() * -2,
+                  mass: circle.radius / 10,
+                })),
+              )
+              setPhysicsActive(true)
+            }
+
+            // Clear any selected/moveable states
+            setSelectedCircleIndex(-1)
+            setMoveableCircleIndex(-1)
           }
           break
 
@@ -599,6 +661,8 @@ export default function InteractiveCanvas(props) {
       getMoveableCircle,
       findNearestCircleInDirection,
       findMostEmptyArea,
+      lastUsedRadius,
+      physicsActive,
     ],
   )
 
@@ -877,6 +941,9 @@ export default function InteractiveCanvas(props) {
         const scale = currentDistance / pinchStartDistance
         const newRadius = Math.max(minRadius, Math.min(maxRadius, pinchStartRadius * scale))
 
+        // Remember this radius for future use
+        setLastUsedRadius(newRadius)
+
         setCircles((prev) =>
           prev.map((circle, index) =>
             index === pinchCircleIndex ? { ...circle, radius: newRadius, mass: newRadius / 10 } : circle,
@@ -930,6 +997,7 @@ export default function InteractiveCanvas(props) {
       moveableCircleIndex,
       dragOffset,
       getMoveableCircle,
+      lastUsedRadius,
     ],
   )
 
@@ -1090,7 +1158,7 @@ export default function InteractiveCanvas(props) {
         }}
       >
         <div>🎮 Controls:</div>
-        <div>N = New • ↑↓←→ Select/Move • Space = Toggle Move • Enter = Gravity</div>
+        <div>N = New • ↑↓←→ Select/Move • Space = Toggle Move • Enter = Gravity • ESC = Clear</div>
         <div>1-9,0 = Resize • Click & Drag = Create/Move • Pinch = Resize</div>
         {selectedCircleIndex >= 0 && keyboardMode && <div>📍 Selected: Circle {selectedCircleIndex + 1}</div>}
         {moveableCircleIndex >= 0 && <div>🎯 Moving: Circle {moveableCircleIndex + 1}</div>}
